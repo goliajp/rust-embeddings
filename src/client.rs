@@ -228,7 +228,7 @@ impl Client {
             model: self.default_model.clone(),
             dimensions: self.default_dimensions,
             input_type: self.default_input_type,
-            backoff: self.default_backoff.clone(),
+            backoff: self.default_backoff,
             timeout: self.default_timeout,
         }
     }

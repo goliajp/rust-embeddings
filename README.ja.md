@@ -40,7 +40,7 @@ let result = client.embed(vec!["hello world".into()]).await?;
 embedrs = "0.2"
 
 # ローカル推論を有効化（初回使用時に約 23MB のモデルをダウンロード）
-embedrs = { version = "0.1", features = ["local"] }
+embedrs = { version = "0.2", features = ["local"] }
 ```
 
 ## ベンチマーク結果
@@ -226,6 +226,7 @@ let c = client.embed(vec!["query".into()])
 |---|---|---|
 | *(なし)* | 有効 | コア機能、5 クラウドプロバイダー |
 | `local` | 無効 | candle によるローカル推論（all-MiniLM-L6-v2、23MB） |
+| `cost-tracking` | 無効 | `tiktoken` の価格データによるリクエストごとのコスト推定 |
 | `tracing` | 無効 | `tracing` クレートによる構造化ログ |
 
 ```toml
@@ -234,10 +235,68 @@ let c = client.embed(vec!["query".into()])
 embedrs = "0.2"
 
 # クラウド + ローカル推論
-embedrs = { version = "0.1", features = ["local"] }
+embedrs = { version = "0.2", features = ["local"] }
+
+# コスト追跡付き
+embedrs = { version = "0.2", features = ["cost-tracking"] }
 
 # tracing 付き
-embedrs = { version = "0.1", features = ["local", "tracing"] }
+embedrs = { version = "0.2", features = ["local", "tracing"] }
+```
+
+## プロバイダーフォールバック
+
+フォールバックプロバイダーをチェーンして、プライマリが利用不可の場合に自動切り替え:
+
+```rust
+let client = embedrs::Client::openai("sk-...")
+    .with_fallback(embedrs::Client::cohere("cohere-key"));
+// OpenAI が失敗した場合、自動的に Cohere を試行
+let result = client.embed(vec!["hello".into()]).await?;
+```
+
+複数のフォールバックを順番に試行:
+
+```rust
+let client = embedrs::Client::openai("sk-...")
+    .with_fallback(embedrs::Client::cohere("cohere-key"))
+    .with_fallback(embedrs::Client::voyage("voyage-key"));
+```
+
+## コスト追跡
+
+`cost-tracking` フィーチャーを有効にすると、リクエストごとの推定コストを取得可能:
+
+```toml
+embedrs = { version = "0.2", features = ["cost-tracking"] }
+```
+
+```rust
+let result = client.embed(vec!["hello".into()]).await?;
+if let Some(cost) = result.usage.cost {
+    println!("estimated cost: ${cost:.6}");
+}
+```
+
+コスト推定は `tiktoken` の価格データに基づきます。価格情報のないモデルは `None` を返します。
+
+## エラーハンドリング
+
+すべての失敗可能な操作は `embedrs::Result<T>` を返します。`Error` のバリアントをマッチして細かく制御:
+
+```rust,no_run
+use embedrs::Error;
+
+# async fn run(client: &embedrs::Client) {
+match client.embed(vec!["hello".into()]).await {
+    Ok(result) => println!("got {} embeddings", result.embeddings.len()),
+    Err(Error::Api { status: 429, .. }) => eprintln!("rate limited"),
+    Err(Error::Api { status, message }) => eprintln!("API error {status}: {message}"),
+    Err(Error::Timeout(duration)) => eprintln!("timed out after {duration:?}"),
+    Err(Error::Http(e)) => eprintln!("network error: {e}"),
+    Err(e) => eprintln!("other error: {e}"),
+}
+# }
 ```
 
 ## ライセンス

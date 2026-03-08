@@ -35,7 +35,7 @@ impl<'a> BatchBuilder<'a> {
             input_type: client.default_input_type,
             concurrency: 5,
             chunk_size: None,
-            backoff: client.default_backoff.clone(),
+            backoff: client.default_backoff,
             timeout: client.default_timeout,
         }
     }
@@ -112,12 +112,13 @@ impl<'a> BatchBuilder<'a> {
             });
         }
 
+        let total_texts = self.texts.len();
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrency));
         let client = self.client;
         let model: Option<Arc<str>> = self.model.map(|s| Arc::from(s.as_str()));
         let dimensions = self.dimensions;
         let input_type = self.input_type;
-        let backoff = self.backoff.map(Arc::new);
+        let backoff = self.backoff;
         let timeout = self.timeout;
 
         let chunks: Vec<Vec<String>> = {
@@ -137,7 +138,6 @@ impl<'a> BatchBuilder<'a> {
             .map(|chunk| {
                 let sem = semaphore.clone();
                 let model = model.clone();
-                let backoff = backoff.clone();
 
                 async move {
                     let _permit = sem
@@ -154,8 +154,8 @@ impl<'a> BatchBuilder<'a> {
                     if let Some(it) = input_type {
                         builder = builder.input_type(it);
                     }
-                    if let Some(ref b) = backoff {
-                        builder = builder.retry_backoff((**b).clone());
+                    if let Some(b) = backoff {
+                        builder = builder.retry_backoff(b);
                     }
                     builder = builder.timeout(timeout);
                     builder.await
@@ -166,7 +166,7 @@ impl<'a> BatchBuilder<'a> {
         let results = futures::future::join_all(handles).await;
 
         // merge results in order
-        let mut all_embeddings = Vec::new();
+        let mut all_embeddings = Vec::with_capacity(total_texts);
         let mut total_usage = Usage::default();
         let mut result_model = String::new();
 

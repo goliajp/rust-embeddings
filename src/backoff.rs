@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 /// Configuration for exponential backoff on retryable HTTP errors (429, 503).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct BackoffConfig {
     /// Base delay between retries. Default: 500ms.
     pub base_delay: Duration,
