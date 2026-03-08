@@ -37,7 +37,7 @@ let result = client.embed(vec!["hello world".into()]).await?;
 
 ```toml
 [dependencies]
-embedrs = "0.1"
+embedrs = "0.2"
 
 # 启用本地推理（首次使用下载约 23MB 模型）
 embedrs = { version = "0.1", features = ["local"] }
@@ -231,7 +231,7 @@ let c = client.embed(vec!["query".into()])
 ```toml
 [dependencies]
 # 仅云端
-embedrs = "0.1"
+embedrs = "0.2"
 
 # 云端 + 本地推理
 embedrs = { version = "0.1", features = ["local"] }
