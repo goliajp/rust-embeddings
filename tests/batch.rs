@@ -260,3 +260,114 @@ async fn batch_propagates_model_and_dimensions() {
 
     assert_eq!(result.embeddings.len(), 2);
 }
+
+#[tokio::test]
+async fn embed_at_exact_provider_limit_openai() {
+    let server = MockServer::start().await;
+
+    // openai max_batch_size = 2048
+    let n = 2048;
+
+    struct DynamicResponder;
+
+    impl Respond for DynamicResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            let count = body["input"].as_array().unwrap().len();
+            ResponseTemplate::new(200).set_body_json(mock_openai_response(count))
+        }
+    }
+
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(DynamicResponder)
+        .mount(&server)
+        .await;
+
+    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let texts: Vec<String> = (0..n).map(|i| format!("text {i}")).collect();
+    let result = client.embed(texts).await.unwrap();
+
+    assert_eq!(result.embeddings.len(), n);
+    assert!(result.usage.total_tokens > 0);
+}
+
+#[tokio::test]
+async fn embed_exceeding_provider_limit_returns_input_too_large() {
+    // openai max_batch_size = 2048, so 2049 should fail
+    let client = embedrs::Client::openai("test-key");
+    let texts: Vec<String> = (0..2049).map(|i| format!("text {i}")).collect();
+    let err = client.embed(texts).await.unwrap_err();
+
+    match err {
+        embedrs::Error::InputTooLarge(actual, max) => {
+            assert_eq!(actual, 2049);
+            assert_eq!(max, 2048);
+        }
+        _ => panic!("expected InputTooLarge error, got {err:?}"),
+    }
+}
+
+#[tokio::test]
+async fn embed_exceeding_cohere_limit_returns_input_too_large() {
+    // cohere max_batch_size = 96
+    let client = embedrs::Client::cohere("test-key");
+    let texts: Vec<String> = (0..97).map(|i| format!("text {i}")).collect();
+    let err = client.embed(texts).await.unwrap_err();
+
+    match err {
+        embedrs::Error::InputTooLarge(actual, max) => {
+            assert_eq!(actual, 97);
+            assert_eq!(max, 96);
+        }
+        _ => panic!("expected InputTooLarge error, got {err:?}"),
+    }
+}
+
+#[tokio::test]
+async fn embed_exceeding_gemini_limit_returns_input_too_large() {
+    // gemini max_batch_size = 100
+    let client = embedrs::Client::gemini("test-key");
+    let texts: Vec<String> = (0..101).map(|i| format!("text {i}")).collect();
+    let err = client.embed(texts).await.unwrap_err();
+
+    match err {
+        embedrs::Error::InputTooLarge(actual, max) => {
+            assert_eq!(actual, 101);
+            assert_eq!(max, 100);
+        }
+        _ => panic!("expected InputTooLarge error, got {err:?}"),
+    }
+}
+
+#[tokio::test]
+async fn embed_exceeding_voyage_limit_returns_input_too_large() {
+    // voyage max_batch_size = 128
+    let client = embedrs::Client::voyage("test-key");
+    let texts: Vec<String> = (0..129).map(|i| format!("text {i}")).collect();
+    let err = client.embed(texts).await.unwrap_err();
+
+    match err {
+        embedrs::Error::InputTooLarge(actual, max) => {
+            assert_eq!(actual, 129);
+            assert_eq!(max, 128);
+        }
+        _ => panic!("expected InputTooLarge error, got {err:?}"),
+    }
+}
+
+#[tokio::test]
+async fn embed_exceeding_jina_limit_returns_input_too_large() {
+    // jina max_batch_size = 2048
+    let client = embedrs::Client::jina("test-key");
+    let texts: Vec<String> = (0..2049).map(|i| format!("text {i}")).collect();
+    let err = client.embed(texts).await.unwrap_err();
+
+    match err {
+        embedrs::Error::InputTooLarge(actual, max) => {
+            assert_eq!(actual, 2049);
+            assert_eq!(max, 2048);
+        }
+        _ => panic!("expected InputTooLarge error, got {err:?}"),
+    }
+}

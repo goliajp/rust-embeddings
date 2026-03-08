@@ -220,4 +220,98 @@ mod tests {
         assert!(bytes.len() > 400_000);
         assert!(bytes.len() < 600_000);
     }
+
+    #[test]
+    fn decompress_tokenizer_all_minilm_l12_v2() {
+        let def = super::super::model::get_model("all-MiniLM-L12-v2").unwrap();
+        let bytes = decompress_zstd(def.tokenizer_data).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(parsed.is_object());
+        assert!(parsed.get("model").is_some());
+    }
+
+    #[test]
+    fn decompress_tokenizer_bge_small_en_v1_5() {
+        let def = super::super::model::get_model("bge-small-en-v1.5").unwrap();
+        let bytes = decompress_zstd(def.tokenizer_data).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(parsed.is_object());
+        assert!(parsed.get("model").is_some());
+    }
+
+    #[test]
+    fn decompress_tokenizer_gte_small() {
+        let def = super::super::model::get_model("gte-small").unwrap();
+        let bytes = decompress_zstd(def.tokenizer_data).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(parsed.is_object());
+        assert!(parsed.get("model").is_some());
+    }
+
+    #[test]
+    fn all_models_produce_valid_tokenizer() {
+        for name in super::super::model::list_models() {
+            let def = super::super::model::get_model(name).unwrap();
+            let bytes = decompress_zstd(def.tokenizer_data)
+                .unwrap_or_else(|e| panic!("{name} decompression failed: {e}"));
+            let tokenizer = Tokenizer::from_bytes(&bytes)
+                .unwrap_or_else(|e| panic!("{name} tokenizer load failed: {e}"));
+            // tokenizer should be able to encode a simple string
+            let encoding = tokenizer.encode("hello world", true).unwrap();
+            assert!(
+                !encoding.get_ids().is_empty(),
+                "{name} tokenizer produced no tokens"
+            );
+        }
+    }
+
+    #[test]
+    fn bert_config_values_are_reasonable() {
+        for name in super::super::model::list_models() {
+            let def = super::super::model::get_model(name).unwrap();
+            let config = &def.config;
+            assert!(
+                config.hidden_size > 0,
+                "{name} hidden_size should be positive"
+            );
+            assert!(
+                config.num_hidden_layers > 0,
+                "{name} num_hidden_layers should be positive"
+            );
+            assert!(
+                config.num_attention_heads > 0,
+                "{name} num_attention_heads should be positive"
+            );
+            assert!(
+                config.vocab_size > 0,
+                "{name} vocab_size should be positive"
+            );
+            assert!(
+                config.intermediate_size > config.hidden_size,
+                "{name} intermediate_size should be larger than hidden_size"
+            );
+            assert!(
+                config.max_position_embeddings > 0,
+                "{name} max_position_embeddings should be positive"
+            );
+            // hidden_size must be divisible by num_attention_heads
+            assert_eq!(
+                config.hidden_size % config.num_attention_heads,
+                0,
+                "{name} hidden_size must be divisible by num_attention_heads"
+            );
+            // hidden_size should match model definition
+            assert_eq!(
+                config.hidden_size, def.hidden_size,
+                "{name} config.hidden_size should match def.hidden_size"
+            );
+        }
+    }
+
+    #[test]
+    fn decompress_invalid_data_returns_error() {
+        let invalid = b"not zstd data";
+        let result = decompress_zstd(invalid);
+        assert!(result.is_err());
+    }
 }

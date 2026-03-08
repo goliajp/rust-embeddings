@@ -40,7 +40,7 @@ let result = client.embed(vec!["hello world".into()]).await?;
 embedrs = "0.2"
 
 # 启用本地推理（首次使用下载约 23MB 模型）
-embedrs = { version = "0.1", features = ["local"] }
+embedrs = { version = "0.2", features = ["local"] }
 ```
 
 ## 基准测试结果
@@ -226,6 +226,7 @@ let c = client.embed(vec!["query".into()])
 |---|---|---|
 | *(none)* | 是 | 核心功能，5 个云端提供商 |
 | `local` | 否 | 本地推理，基于 candle（all-MiniLM-L6-v2，23MB） |
+| `cost-tracking` | 否 | 通过 `tiktoken` 定价数据估算每次请求的费用 |
 | `tracing` | 否 | 通过 `tracing` crate 输出结构化日志 |
 
 ```toml
@@ -234,10 +235,68 @@ let c = client.embed(vec!["query".into()])
 embedrs = "0.2"
 
 # 云端 + 本地推理
-embedrs = { version = "0.1", features = ["local"] }
+embedrs = { version = "0.2", features = ["local"] }
+
+# 启用费用追踪
+embedrs = { version = "0.2", features = ["cost-tracking"] }
 
 # 启用 tracing
-embedrs = { version = "0.1", features = ["local", "tracing"] }
+embedrs = { version = "0.2", features = ["local", "tracing"] }
+```
+
+## 提供商回退
+
+链式配置回退提供商，主提供商不可用时自动切换：
+
+```rust
+let client = embedrs::Client::openai("sk-...")
+    .with_fallback(embedrs::Client::cohere("cohere-key"));
+// OpenAI 失败时自动尝试 Cohere
+let result = client.embed(vec!["hello".into()]).await?;
+```
+
+支持多个回退，按顺序尝试：
+
+```rust
+let client = embedrs::Client::openai("sk-...")
+    .with_fallback(embedrs::Client::cohere("cohere-key"))
+    .with_fallback(embedrs::Client::voyage("voyage-key"));
+```
+
+## 费用追踪
+
+启用 `cost-tracking` feature 可获取每次请求的费用估算：
+
+```toml
+embedrs = { version = "0.2", features = ["cost-tracking"] }
+```
+
+```rust
+let result = client.embed(vec!["hello".into()]).await?;
+if let Some(cost) = result.usage.cost {
+    println!("estimated cost: ${cost:.6}");
+}
+```
+
+费用估算基于 `tiktoken` 定价数据。无定价信息的模型返回 `None`。
+
+## 错误处理
+
+所有可能失败的操作返回 `embedrs::Result<T>`。通过匹配 `Error` 变体进行细粒度控制：
+
+```rust,no_run
+use embedrs::Error;
+
+# async fn run(client: &embedrs::Client) {
+match client.embed(vec!["hello".into()]).await {
+    Ok(result) => println!("got {} embeddings", result.embeddings.len()),
+    Err(Error::Api { status: 429, .. }) => eprintln!("rate limited"),
+    Err(Error::Api { status, message }) => eprintln!("API error {status}: {message}"),
+    Err(Error::Timeout(duration)) => eprintln!("timed out after {duration:?}"),
+    Err(Error::Http(e)) => eprintln!("network error: {e}"),
+    Err(e) => eprintln!("other error: {e}"),
+}
+# }
 ```
 
 ## 许可证

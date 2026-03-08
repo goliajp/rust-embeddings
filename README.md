@@ -40,7 +40,7 @@ let result = client.embed(vec!["hello world".into()]).await?;
 embedrs = "0.2"
 
 # enable local inference (adds ~23MB model download on first use)
-embedrs = { version = "0.1", features = ["local"] }
+embedrs = { version = "0.2", features = ["local"] }
 ```
 
 ## Benchmark Results
@@ -226,6 +226,7 @@ let c = client.embed(vec!["query".into()])
 |---|---|---|
 | *(none)* | yes | Core embedding client, all 5 cloud providers |
 | `local` | no | Local inference via candle (all-MiniLM-L6-v2, 23MB) |
+| `cost-tracking` | no | Estimated cost per request via `tiktoken` pricing data |
 | `tracing` | no | Structured logging via the `tracing` crate |
 
 ```toml
@@ -234,10 +235,68 @@ let c = client.embed(vec!["query".into()])
 embedrs = "0.2"
 
 # cloud + local inference
-embedrs = { version = "0.1", features = ["local"] }
+embedrs = { version = "0.2", features = ["local"] }
+
+# with cost tracking
+embedrs = { version = "0.2", features = ["cost-tracking"] }
 
 # with tracing
-embedrs = { version = "0.1", features = ["local", "tracing"] }
+embedrs = { version = "0.2", features = ["local", "tracing"] }
+```
+
+## Provider Fallback
+
+Chain fallback providers for automatic failover when the primary provider is unavailable:
+
+```rust
+let client = embedrs::Client::openai("sk-...")
+    .with_fallback(embedrs::Client::cohere("cohere-key"));
+// if OpenAI fails, automatically tries Cohere
+let result = client.embed(vec!["hello".into()]).await?;
+```
+
+Multiple fallbacks are tried in order:
+
+```rust
+let client = embedrs::Client::openai("sk-...")
+    .with_fallback(embedrs::Client::cohere("cohere-key"))
+    .with_fallback(embedrs::Client::voyage("voyage-key"));
+```
+
+## Cost Tracking
+
+Enable the `cost-tracking` feature to get estimated cost per request:
+
+```toml
+embedrs = { version = "0.2", features = ["cost-tracking"] }
+```
+
+```rust
+let result = client.embed(vec!["hello".into()]).await?;
+if let Some(cost) = result.usage.cost {
+    println!("estimated cost: ${cost:.6}");
+}
+```
+
+Cost estimation uses `tiktoken` pricing data. Returns `None` for models without pricing information.
+
+## Error Handling
+
+All fallible operations return `embedrs::Result<T>`. Match on `Error` variants for fine-grained control:
+
+```rust,no_run
+use embedrs::Error;
+
+# async fn run(client: &embedrs::Client) {
+match client.embed(vec!["hello".into()]).await {
+    Ok(result) => println!("got {} embeddings", result.embeddings.len()),
+    Err(Error::Api { status: 429, .. }) => eprintln!("rate limited"),
+    Err(Error::Api { status, message }) => eprintln!("API error {status}: {message}"),
+    Err(Error::Timeout(duration)) => eprintln!("timed out after {duration:?}"),
+    Err(Error::Http(e)) => eprintln!("network error: {e}"),
+    Err(e) => eprintln!("other error: {e}"),
+}
+# }
 ```
 
 ## License

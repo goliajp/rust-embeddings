@@ -44,6 +44,39 @@
 //! # }
 //! ```
 //!
+//! ## Provider fallback
+//!
+//! Chain fallback providers for automatic failover:
+//!
+//! ```rust,no_run
+//! # async fn run() -> embedrs::Result<()> {
+//! let client = embedrs::Client::openai("sk-...")
+//!     .with_fallback(embedrs::Client::cohere("cohere-key"));
+//! // if OpenAI fails, automatically tries Cohere
+//! let result = client.embed(vec!["hello".into()]).await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Cost tracking
+//!
+//! Enable the `cost-tracking` feature to get estimated cost per request via `tiktoken` pricing data.
+//! The `Usage::cost` field will be `Some(f64)` for models with pricing info, `None` otherwise.
+//!
+//! ```toml
+//! embedrs = { version = "0.2", features = ["cost-tracking"] }
+//! ```
+//!
+//! ## Error handling
+//!
+//! All fallible operations return [`Result<T>`]. Match on [`Error`] variants for fine-grained control:
+//!
+//! - [`Error::Api`] — API returned an error status (e.g., 429 rate limit, 401 unauthorized)
+//! - [`Error::Timeout`] — request exceeded the configured timeout
+//! - [`Error::Http`] — network-level failure
+//! - [`Error::Json`] — response body could not be parsed
+//! - [`Error::InputTooLarge`] — input exceeded the provider's batch size limit
+//!
 //! ## Similarity
 //!
 //! ```rust
