@@ -34,6 +34,7 @@ pub struct Client {
     pub(crate) default_input_type: Option<InputType>,
     pub(crate) default_backoff: Option<BackoffConfig>,
     pub(crate) default_timeout: Duration,
+    pub(crate) fallbacks: Vec<Client>,
 }
 
 impl Client {
@@ -46,6 +47,7 @@ impl Client {
             default_input_type: None,
             default_backoff: None,
             default_timeout: DEFAULT_TIMEOUT,
+            fallbacks: Vec::new(),
         }
     }
 
@@ -134,7 +136,7 @@ impl Client {
     /// The model weights are downloaded from HuggingFace Hub on first use
     /// and cached locally. The tokenizer is embedded in the binary.
     ///
-    /// Available models: `"all-MiniLM-L6-v2"`
+    /// Available models: `"all-MiniLM-L6-v2"`, `"all-MiniLM-L12-v2"`, `"bge-small-en-v1.5"`, `"gte-small"`
     ///
     /// ```rust,no_run
     /// # async fn run() -> embedrs::Result<()> {
@@ -149,11 +151,17 @@ impl Client {
         let model_def = crate::local::get_model(model_name)
             .ok_or_else(|| Error::UnknownModel(model_name.to_string()))?;
 
-        Ok(Self::new_with_provider(ProviderKind::Local {
+        Ok(Self::from_local_model(model_def))
+    }
+
+    /// create a client from a known model definition (infallible)
+    #[cfg(feature = "local")]
+    pub(crate) fn from_local_model(model_def: &'static crate::local::ModelDefinition) -> Self {
+        Self::new_with_provider(ProviderKind::Local {
             model_def,
             engine: std::sync::Arc::new(tokio::sync::OnceCell::new()),
         })
-        .with_model(model_name))
+        .with_model(model_def.name)
     }
 
     /// Set the default model for all embedding requests.
@@ -194,6 +202,13 @@ impl Client {
             default_timeout: timeout,
             ..self
         }
+    }
+
+    /// Chain a fallback client. If the primary provider fails with a non-retryable
+    /// error, the request is retried against fallback providers in order.
+    pub fn with_fallback(mut self, fallback: Client) -> Self {
+        self.fallbacks.push(fallback);
+        self
     }
 
     /// Begin an embedding request for one or more texts.
@@ -317,7 +332,34 @@ impl EmbedBuilder<'_> {
     }
 
     async fn execute_inner(self) -> Result<EmbedResult> {
-        let max_batch = self.client.provider.max_batch_size();
+        // try primary provider
+        let result = self.try_provider(self.client).await;
+
+        // on failure, try fallbacks in order
+        match result {
+            Ok(ok) => Ok(ok),
+            Err(primary_err) => {
+                #[cfg(feature = "tracing")]
+                if !self.client.fallbacks.is_empty() {
+                    tracing::info!(
+                        from_provider = self.client.provider.kind_name(),
+                        error = %primary_err,
+                        "primary provider failed, trying fallbacks"
+                    );
+                }
+
+                for fallback in &self.client.fallbacks {
+                    if let Ok(ok) = self.try_provider(fallback).await {
+                        return Ok(ok);
+                    }
+                }
+                Err(primary_err)
+            }
+        }
+    }
+
+    async fn try_provider(&self, client: &Client) -> Result<EmbedResult> {
+        let max_batch = client.provider.max_batch_size();
         if self.texts.len() > max_batch {
             return Err(Error::InputTooLarge(self.texts.len(), max_batch));
         }
@@ -325,7 +367,7 @@ impl EmbedBuilder<'_> {
         let model = self
             .model
             .as_deref()
-            .unwrap_or(self.client.provider.default_model());
+            .unwrap_or(client.provider.default_model());
 
         let max_http_retries = self
             .backoff
@@ -334,11 +376,10 @@ impl EmbedBuilder<'_> {
             .unwrap_or(0);
 
         for http_attempt in 0..=max_http_retries {
-            let result = self
-                .client
+            let result = client
                 .provider
                 .send(
-                    &self.client.http,
+                    &client.http,
                     model,
                     &self.texts,
                     self.dimensions,
@@ -354,11 +395,18 @@ impl EmbedBuilder<'_> {
                         embeddings = raw.embeddings.len(),
                         "embedding succeeded"
                     );
+                    #[cfg(not(feature = "cost-tracking"))]
+                    let usage = Usage {
+                        total_tokens: raw.total_tokens,
+                    };
+                    #[cfg(feature = "cost-tracking")]
+                    let usage = Usage {
+                        total_tokens: raw.total_tokens,
+                        cost: tiktoken::pricing::estimate_cost(model, raw.total_tokens as u64, 0),
+                    };
                     return Ok(EmbedResult {
                         embeddings: raw.embeddings,
-                        usage: Usage {
-                            total_tokens: raw.total_tokens,
-                        },
+                        usage,
                         model: raw.model,
                     });
                 }
@@ -583,10 +631,28 @@ mod tests {
     }
 
     #[test]
+    fn client_with_fallback() {
+        let client = Client::openai("key").with_fallback(Client::cohere("cohere-key"));
+        assert_eq!(client.fallbacks.len(), 1);
+    }
+
+    #[test]
+    fn client_with_multiple_fallbacks() {
+        let client = Client::openai("key")
+            .with_fallback(Client::cohere("cohere-key"))
+            .with_fallback(Client::voyage("voyage-key"));
+        assert_eq!(client.fallbacks.len(), 2);
+    }
+
+    #[test]
     fn embed_result_debug_clone() {
         let result = EmbedResult {
             embeddings: vec![vec![1.0, 2.0, 3.0]],
-            usage: Usage { total_tokens: 10 },
+            usage: Usage {
+                total_tokens: 10,
+                #[cfg(feature = "cost-tracking")]
+                cost: None,
+            },
             model: "text-embedding-3-small".into(),
         };
         let cloned = result.clone();

@@ -106,6 +106,11 @@ static GTE_SMALL: std::sync::LazyLock<ModelDefinition> =
         pooling: PoolingStrategy::MeanPooling,
     });
 
+/// return the default model definition (all-MiniLM-L6-v2)
+pub(crate) fn default_model() -> &'static ModelDefinition {
+    &ALL_MINILM_L6_V2
+}
+
 pub fn get_model(name: &str) -> Option<&'static ModelDefinition> {
     match name {
         "all-MiniLM-L6-v2" => Some(&ALL_MINILM_L6_V2),

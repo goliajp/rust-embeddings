@@ -3,11 +3,23 @@
 pub struct Usage {
     /// Number of tokens consumed by the input texts.
     pub total_tokens: u32,
+    /// Estimated cost in USD. `None` if the model has no pricing data.
+    #[cfg(feature = "cost-tracking")]
+    pub cost: Option<f64>,
 }
 
 impl Usage {
     pub(crate) fn accumulate(&mut self, tokens: u32) {
         self.total_tokens += tokens;
+    }
+
+    #[cfg(feature = "cost-tracking")]
+    pub(crate) fn accumulate_cost(&mut self, cost: Option<f64>) {
+        match (self.cost, cost) {
+            (Some(a), Some(b)) => self.cost = Some(a + b),
+            (None, Some(b)) => self.cost = Some(b),
+            _ => {}
+        }
     }
 }
 
@@ -50,5 +62,28 @@ mod tests {
         let debug = format!("{usage:?}");
         assert!(debug.contains("Usage"));
         assert!(debug.contains("total_tokens"));
+    }
+
+    #[cfg(feature = "cost-tracking")]
+    #[test]
+    fn cost_tracking_accumulate() {
+        let mut usage = Usage::default();
+        assert_eq!(usage.cost, None);
+
+        usage.accumulate_cost(Some(0.001));
+        assert_eq!(usage.cost, Some(0.001));
+
+        usage.accumulate_cost(Some(0.002));
+        assert!((usage.cost.unwrap() - 0.003).abs() < f64::EPSILON);
+
+        usage.accumulate_cost(None);
+        assert!((usage.cost.unwrap() - 0.003).abs() < f64::EPSILON);
+    }
+
+    #[cfg(feature = "cost-tracking")]
+    #[test]
+    fn cost_tracking_default_none() {
+        let usage = Usage::default();
+        assert_eq!(usage.cost, None);
     }
 }

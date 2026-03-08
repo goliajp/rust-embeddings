@@ -22,6 +22,7 @@ thiserror = "2"
 rand = "0.9"
 futures = "0.3"
 tracing = { version = "0.1", optional = true }
+tiktoken = { path = "../tiktoken", version = "3.1", optional = true }
 candle-core = { version = "0.9", optional = true }
 candle-nn = { version = "0.9", optional = true }
 candle-transformers = { version = "0.9", optional = true }
@@ -32,6 +33,7 @@ ruzstd = { version = "0.8", optional = true }
 [features]
 default = []
 tracing = ["dep:tracing"]
+cost-tracking = ["tiktoken"]
 local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:hf-hub", "dep:ruzstd"]
 
 [[example]]

@@ -27,7 +27,7 @@
 //!
 //! ```rust,ignore
 //! // local — zero config, free, 23MB model downloaded on first use
-//! let client = embedrs::local()?;
+//! let client = embedrs::local();
 //! let result = client.embed(vec!["hello world".into()]).await?;
 //! ```
 //!
@@ -80,14 +80,15 @@ pub use usage::Usage;
 ///
 /// ```rust,no_run
 /// # async fn run() -> embedrs::Result<()> {
-/// let client = embedrs::local()?;
+/// let client = embedrs::local();
 /// let result = client.embed(vec!["hello world".into()]).await?;
 /// # Ok(())
 /// # }
 /// ```
 #[cfg(feature = "local")]
-pub fn local() -> Result<Client> {
-    Client::local("all-MiniLM-L6-v2")
+pub fn local() -> Client {
+    let model_def = local::default_model();
+    Client::from_local_model(model_def)
 }
 
 /// Create a cloud embedding client with the recommended default provider (OpenAI text-embedding-3-small).
@@ -125,7 +126,7 @@ mod tests {
     #[cfg(feature = "local")]
     #[test]
     fn local_creates_default_client() {
-        let client = crate::local().unwrap();
+        let client = crate::local();
         assert_eq!(client.default_model.as_deref(), Some("all-MiniLM-L6-v2"));
         match &client.provider {
             crate::provider::ProviderKind::Local { model_def, .. } => {
