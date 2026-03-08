@@ -10,6 +10,9 @@ pub(crate) use jina::send_jina;
 pub(crate) use openai::send_openai;
 pub(crate) use voyage::send_voyage;
 
+#[cfg(feature = "local")]
+use std::sync::Arc;
+
 use crate::error::Result;
 
 pub(crate) struct RawEmbedResponse {
@@ -33,11 +36,31 @@ pub enum InputType {
 
 #[derive(Clone)]
 pub(crate) enum ProviderKind {
-    OpenAi { api_key: String, base_url: String },
-    Cohere { api_key: String, base_url: String },
-    Gemini { api_key: String, base_url: String },
-    Voyage { api_key: String, base_url: String },
-    Jina { api_key: String, base_url: String },
+    OpenAi {
+        api_key: String,
+        base_url: String,
+    },
+    Cohere {
+        api_key: String,
+        base_url: String,
+    },
+    Gemini {
+        api_key: String,
+        base_url: String,
+    },
+    Voyage {
+        api_key: String,
+        base_url: String,
+    },
+    Jina {
+        api_key: String,
+        base_url: String,
+    },
+    #[cfg(feature = "local")]
+    Local {
+        model_def: &'static crate::local::ModelDefinition,
+        engine: Arc<tokio::sync::OnceCell<Arc<crate::local::InferenceEngine>>>,
+    },
 }
 
 impl ProviderKind {
@@ -48,6 +71,8 @@ impl ProviderKind {
             Self::Gemini { .. } => "gemini-embedding-001",
             Self::Voyage { .. } => "voyage-3-large",
             Self::Jina { .. } => "jina-embeddings-v3",
+            #[cfg(feature = "local")]
+            Self::Local { model_def, .. } => model_def.name,
         }
     }
 
@@ -59,6 +84,8 @@ impl ProviderKind {
             Self::Gemini { .. } => 100,
             Self::Voyage { .. } => 128,
             Self::Jina { .. } => 2048,
+            #[cfg(feature = "local")]
+            Self::Local { .. } => 256,
         }
     }
 
@@ -71,6 +98,8 @@ impl ProviderKind {
             Self::Gemini { .. } => "gemini",
             Self::Voyage { .. } => "voyage",
             Self::Jina { .. } => "jina",
+            #[cfg(feature = "local")]
+            Self::Local { .. } => "local",
         }
     }
 
@@ -103,6 +132,26 @@ impl ProviderKind {
                     http, base_url, api_key, model, texts, dimensions, input_type,
                 )
                 .await
+            }
+            #[cfg(feature = "local")]
+            Self::Local { model_def, engine } => {
+                let eng = engine
+                    .get_or_try_init(|| crate::local::InferenceEngine::load(model_def))
+                    .await?;
+                let eng = eng.clone();
+                // clone required: spawn_blocking needs 'static ownership, and we only have &[String]
+                let texts = texts.to_vec();
+                let (embeddings, total_tokens) =
+                    tokio::task::spawn_blocking(move || eng.encode(&texts))
+                        .await
+                        .map_err(|e| {
+                            crate::error::Error::Other(format!("inference task failed: {e}"))
+                        })??;
+                Ok(RawEmbedResponse {
+                    embeddings,
+                    total_tokens,
+                    model: model.to_string(),
+                })
             }
         }
     }

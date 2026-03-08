@@ -6,45 +6,77 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | **日本語**
 
-Rust 向けの統一クラウド Embedding API クライアント。OpenAI、Cohere、Gemini、Voyage、Jina の 5 つのプロバイダーを単一のインターフェースでサポート。自動バッチ分割、指数バックオフリトライ、タイムアウト機能付き。
+Rust 向け統一 Embedding ソリューション -- クラウド API + ローカル推論を単一インターフェースで。データに基づくデフォルト選定。
 
-## 特徴
+## 設計思想
 
-- 5 プロバイダー統一 API (OpenAI, Cohere, Gemini, Voyage, Jina)
-- 各プロバイダーの互換 API もサポート (OpenAI 互換、Cohere 互換など)
-- 自動バッチ分割と並行処理 (`embed_batch`)
-- 入力タイプ指定 (検索ドキュメント、検索クエリ、分類、クラスタリング)
-- 出力次元数の指定
-- 類似度関数 (コサイン類似度、ドット積、ユークリッド距離)
-- HTTP 429/503 に対する指数バックオフリトライ
-- リクエスト全体のタイムアウト
-- オプションの `tracing` 統合
-- `IntoFuture` によるエルゴノミックな `.await` 構文
+> "好用就好用" -- 使いやすさが全て。最適なデフォルトをデータで選ぶ。
+
+- **`embedrs::local()?`** -- all-MiniLM-L6-v2（23MB、無料、API キー不要）
+- **`embedrs::cloud(key)`** -- OpenAI text-embedding-3-small（識別性能最高、最安値）
+- どちらも同じ `EmbedResult` を返す -- コードは一度書くだけ、バックエンドは一行で切り替え
+
+デフォルトは 8 次元 8 モデルのベンチマークで選定。詳細は [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs) を参照。
+
+## クイックスタート
+
+```rust
+// クラウド -- API キーひとつで完了
+let client = embedrs::cloud("sk-...");
+let result = client.embed(vec!["hello world".into()]).await?;
+println!("dimensions: {}", result.embeddings[0].len());
+```
+
+```rust
+// ローカル -- 設定不要、無料、初回使用時に 23MB モデルを自動ダウンロード
+let client = embedrs::local()?;
+let result = client.embed(vec!["hello world".into()]).await?;
+```
 
 ## インストール
 
 ```toml
 [dependencies]
 embedrs = "0.1"
+
+# ローカル推論を有効化（初回使用時に約 23MB のモデルをダウンロード）
+embedrs = { version = "0.1", features = ["local"] }
 ```
 
-または:
+## ベンチマーク結果
 
-```bash
-cargo add embedrs
-```
+8 つの評価次元、184 テキスト。詳細な方法論と再現手順は [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs) を参照。
 
-## クイックスタート
+| 指標 | MiniLM-L6 | MiniLM-L12 | BGE-small | GTE-small | OpenAI | Gemini | Cohere | Voyage |
+|--------|:---------:|:----------:|:---------:|:---------:|:------:|:------:|:------:|:------:|
+| **サイズ** | **23MB** | 133MB | 133MB | 67MB | クラウド | クラウド | クラウド | クラウド |
+| **Spearman ρ** | 0.81 | 0.84 | 0.71 | 0.75 | 0.91 | **0.94** | 0.91 | 0.89 |
+| **識別性** | 0.52 | 0.52 | 0.29 | 0.14 | **0.58** | 0.30 | 0.46 | 0.45 |
+| **検索精度** | **100%** | **100%** | 89% | **100%** | **100%** | 89% | **100%** | 89% |
+| **英語 ρ** | 0.92 | **0.94** | 0.92 | 0.90 | 0.91 | 0.91 | 0.89 | 0.88 |
+| **中国語 ρ** | 0.65 | 0.74 | 0.45 | 0.40 | 0.88 | **0.99** | 0.93 | 0.89 |
+| **日本語 ρ** | 0.60 | 0.90 | 0.20 | 0.50 | 0.90 | **1.00** | **1.00** | 0.90 |
+| **言語横断** | 0.25 | 0.26 | 0.66 | 0.81 | 0.71 | 0.84 | 0.68 | **0.85** |
+| **頑健性** | 0.89 | 0.90 | 0.94 | **0.97** | 0.88 | 0.94 | 0.89 | 0.95 |
+| **クラスタ分離度** | **8.73x** | 4.38x | 1.29x | 1.09x | 2.55x | 1.11x | 1.41x | 1.30x |
+| **コスト** | **$0** | **$0** | **$0** | **$0** | $0.02/1M | 無料枠 | $0.10/1M | $0.06/1M |
 
-```rust
-use embedrs::prelude::*;
+### ローカルに MiniLM-L6 を選んだ理由
 
-let client = Client::openai("sk-...");
+- 23MB -- アプリ組込みに適した唯一のサイズ（他モデルは 67-133MB）
+- クラスタ分離度 8.73x で圧倒的（2位は 4.38x）、データの構造を正確に捉える
+- 検索精度 100%、英語 ρ=0.92 で大半のクラウドモデルを上回る
+- 12 層モデルは 3-6 倍大きいが、品質は大差なし
+- 既知の弱点：中国語・日本語が弱い（ρ=0.60-0.65）、言語横断も低い（0.25）
 
-let result = client.embed(vec!["hello world".into()]).await?;
-println!("dimensions: {}", result.embeddings[0].len());
-println!("tokens: {}", result.usage.total_tokens);
-```
+### クラウドに OpenAI を選んだ理由
+
+- 識別性 0.58 で最高（非類似テキストの平均コサイン = 0.09、ゼロに最も近い）
+- 検索精度 100%、MRR=1.0
+- 多言語バランスが良い：EN=0.91、ZH=0.88、JA=0.90、弱い言語なし
+- 最安値 $0.02/1M トークン
+- Gemini は ρ が高い（0.94）が識別性が低く（0.30）、検索 89% で取りこぼしあり
+- Cohere は品質同等だが 5 倍高い（$0.10/1M）
 
 ## プロバイダー
 
@@ -55,53 +87,39 @@ println!("tokens: {}", result.usage.total_tokens);
 | Google Gemini | `Client::gemini(key)` | `gemini-embedding-001` | 100 |
 | Voyage AI | `Client::voyage(key)` | `voyage-3-large` | 128 |
 | Jina AI | `Client::jina(key)` | `jina-embeddings-v3` | 2048 |
+| ローカル | `Client::local(name)?` | `all-MiniLM-L6-v2` | 256 |
 
-各プロバイダーには `*_compatible` コンストラクタもあり、カスタムエンドポイントを指定できます。
+各クラウドプロバイダーには `*_compatible` コンストラクタがあり、プロキシや互換 API を指定可能:
 
 ```rust
-// OpenAI
-let client = Client::openai("sk-...");
+// OpenAI 互換（Azure、プロキシなど）
+let client = Client::openai_compatible("sk-...", "https://your-proxy.com/v1");
 
-// Cohere
-let client = Client::cohere("co-...");
-
-// Google Gemini
-let client = Client::gemini("AIza...");
-
-// Voyage AI
-let client = Client::voyage("pa-...");
-
-// Jina AI
-let client = Client::jina("jina_...");
-
-// OpenAI 互換 API (カスタムエンドポイント)
-let client = Client::openai_compatible("sk-...", "https://api.example.com/v1");
-
-// Cohere 互換 API
+// Cohere 互換
 let client = Client::cohere_compatible("key", "https://proxy.example.com/v2");
 
-// Gemini 互換 API
+// Gemini 互換
 let client = Client::gemini_compatible("key", "https://proxy.example.com/v1beta");
 
-// Voyage 互換 API
+// Voyage 互換
 let client = Client::voyage_compatible("key", "https://proxy.example.com/v1");
 
-// Jina 互換 API
+// Jina 互換
 let client = Client::jina_compatible("key", "https://proxy.example.com/v1");
 ```
 
 ## バッチ Embedding
 
-大量のテキストをプロバイダーの上限に合わせて自動分割し、並行処理します:
+大量テキストをプロバイダーの上限に合わせて自動分割し、並行処理:
 
 ```rust
-let client = Client::openai("sk-...");
+let client = embedrs::cloud("sk-...");
 
-let texts: Vec<String> = (0..5000).map(|i| format!("text {i}")).collect();
+let texts: Vec<String> = (0..5000).map(|i| format!("document {i}")).collect();
 
 let result = client.embed_batch(texts)
-    .concurrency(5)           // 最大同時リクエスト数
-    .chunk_size(100)          // 1 リクエストあたりのテキスト数 (省略時はプロバイダーのデフォルト)
+    .concurrency(5)       // 最大同時リクエスト数（デフォルト: 5）
+    .chunk_size(512)       // 1リクエストあたりのテキスト数（デフォルト: プロバイダー上限）
     .model("text-embedding-3-large")
     .await?;
 
@@ -109,19 +127,32 @@ println!("total embeddings: {}", result.embeddings.len());
 println!("total tokens: {}", result.usage.total_tokens);
 ```
 
+## 類似度関数
+
+```rust
+use embedrs::{cosine_similarity, dot_product, euclidean_distance};
+
+let a = vec![1.0, 0.0, 0.0];
+let b = vec![0.0, 1.0, 0.0];
+
+let cos = cosine_similarity(&a, &b);    // 0.0（直交）
+let dot = dot_product(&a, &b);          // 0.0
+let dist = euclidean_distance(&a, &b);  // 1.414...
+```
+
 ## 入力タイプ
 
-一部のプロバイダー (Cohere, Gemini, Voyage, Jina) は入力タイプの指定をサポートしています:
+一部のプロバイダーは入力タイプの指定による最適化をサポート:
 
 ```rust
 use embedrs::InputType;
 
-// 検索インデックス用ドキュメントの Embedding
+// ドキュメントのインデックス用
 let result = client.embed(docs)
     .input_type(InputType::SearchDocument)
     .await?;
 
-// 検索クエリの Embedding
+// 検索クエリ用
 let result = client.embed(queries)
     .input_type(InputType::SearchQuery)
     .await?;
@@ -131,36 +162,18 @@ let result = client.embed(queries)
 
 ## 出力次元数
 
-出力ベクトルの次元数を指定 (OpenAI, Gemini, Jina で対応):
+対応プロバイダーで出力ベクトルの次元数を指定:
 
 ```rust
-let client = Client::openai("sk-...")
-    .with_dimensions(256);   // クライアントレベルのデフォルト
-
-// またはリクエストごとに指定
 let result = client.embed(vec!["hello".into()])
-    .dimensions(512)
+    .model("text-embedding-3-large")
+    .dimensions(256)
     .await?;
-```
 
-## 類似度関数
-
-Embedding ベクトル間の類似度を計算するユーティリティ関数:
-
-```rust
-use embedrs::{cosine_similarity, dot_product, euclidean_distance};
-
-let a = vec![1.0, 0.0, 0.0];
-let b = vec![0.0, 1.0, 0.0];
-
-let cos = cosine_similarity(&a, &b);   // 0.0 (直交)
-let dot = dot_product(&a, &b);          // 0.0
-let dist = euclidean_distance(&a, &b);  // 1.414...
+assert_eq!(result.embeddings[0].len(), 256);
 ```
 
 ## バックオフとタイムアウト
-
-HTTP 429/503 エラーに対する指数バックオフと、リクエスト全体のタイムアウトを設定:
 
 ```rust
 use std::time::Duration;
@@ -168,7 +181,7 @@ use embedrs::BackoffConfig;
 
 let client = Client::openai("sk-...")
     .with_retry_backoff(BackoffConfig::default())  // 500ms ベース, 30s 上限, 3 回リトライ
-    .with_timeout(Duration::from_secs(120));        // 全体タイムアウト (デフォルト: 60s)
+    .with_timeout(Duration::from_secs(120));        // 全体タイムアウト（デフォルト: 60s）
 
 // リクエストごとに上書き
 let result = client.embed(vec!["hello".into()])
@@ -196,11 +209,12 @@ let client = Client::openai("sk-...")
     .with_retry_backoff(BackoffConfig::default())
     .with_timeout(Duration::from_secs(120));
 
-// すべてのリクエストで上記のデフォルトが使用されます
-let result = client.embed(vec!["hello".into()]).await?;
+// すべてのリクエストで上記デフォルトを使用
+let a = client.embed(vec!["doc 1".into()]).await?;
+let b = client.embed(vec!["doc 2".into()]).await?;
 
-// 特定のリクエストでのみ上書き
-let result = client.embed(vec!["query".into()])
+// 特定リクエストのみ上書き
+let c = client.embed(vec!["query".into()])
     .model("text-embedding-3-small")
     .input_type(InputType::SearchQuery)
     .await?;
@@ -210,13 +224,20 @@ let result = client.embed(vec!["query".into()])
 
 | Feature | デフォルト | 説明 |
 |---|---|---|
-| (なし) | 有効 | コア機能: 5 プロバイダー、バッチ処理、類似度関数 |
-| `tracing` | 無効 | `tracing` クレートによる構造化ログ出力 |
+| *(なし)* | 有効 | コア機能、5 クラウドプロバイダー |
+| `local` | 無効 | candle によるローカル推論（all-MiniLM-L6-v2、23MB） |
+| `tracing` | 無効 | `tracing` クレートによる構造化ログ |
 
 ```toml
-# tracing を有効にする場合
 [dependencies]
-embedrs = { version = "0.1", features = ["tracing"] }
+# クラウドのみ
+embedrs = "0.1"
+
+# クラウド + ローカル推論
+embedrs = { version = "0.1", features = ["local"] }
+
+# tracing 付き
+embedrs = { version = "0.1", features = ["local", "tracing"] }
 ```
 
 ## ライセンス

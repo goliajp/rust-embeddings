@@ -106,4 +106,33 @@ mod tests {
         assert_eq!(dot_product(&a, &b), 0.0);
         assert!(euclidean_distance(&a, &b).abs() < 1e-6);
     }
+
+    #[test]
+    fn single_element_vectors() {
+        let a = vec![3.0];
+        let b = vec![4.0];
+        // cosine of same-direction scalars is 1.0
+        assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-6);
+        assert!((dot_product(&a, &b) - 12.0).abs() < 1e-6);
+        assert!((euclidean_distance(&a, &b) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mismatched_lengths_truncates_via_zip() {
+        // zip stops at the shorter vector — this documents the behavior
+        let a = vec![1.0, 2.0, 3.0];
+        let b = vec![1.0, 2.0];
+        // only first 2 elements are compared
+        let expected_dot = 1.0 * 1.0 + 2.0 * 2.0; // 5.0
+        assert!((dot_product(&a, &b) - expected_dot).abs() < 1e-6);
+
+        let expected_dist = 0.0f32; // (1-1)^2 + (2-2)^2 = 0
+        assert!((euclidean_distance(&a, &b) - expected_dist).abs() < 1e-6);
+
+        // cosine: dot / (norm_a * norm_b) where norms only cover first 2 elements
+        let norm_a = (1.0f32 * 1.0 + 2.0 * 2.0).sqrt();
+        let norm_b = (1.0f32 * 1.0 + 2.0 * 2.0).sqrt();
+        let expected_cos = expected_dot / (norm_a * norm_b);
+        assert!((cosine_similarity(&a, &b) - expected_cos).abs() < 1e-6);
+    }
 }

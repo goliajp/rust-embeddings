@@ -21,6 +21,10 @@ pub enum Error {
 
     #[error("{0}")]
     Other(String),
+
+    #[cfg(feature = "local")]
+    #[error("unknown local model: {0}")]
+    UnknownModel(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -54,6 +58,14 @@ mod tests {
         let s = err.to_string();
         assert!(s.contains("3000"));
         assert!(s.contains("2048"));
+    }
+
+    #[cfg(feature = "local")]
+    #[test]
+    fn display_unknown_model() {
+        let err = Error::UnknownModel("nonexistent".into());
+        let s = err.to_string();
+        assert!(s.contains("nonexistent"));
     }
 
     #[test]

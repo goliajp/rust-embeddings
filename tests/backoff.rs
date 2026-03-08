@@ -54,6 +54,43 @@ async fn backoff_retries_on_429() {
 }
 
 #[tokio::test]
+async fn timeout_interrupts_slow_request() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({
+                    "object": "list",
+                    "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]}],
+                    "model": "text-embedding-3-small",
+                    "usage": {"prompt_tokens": 5, "total_tokens": 5}
+                }))
+                .set_delay(std::time::Duration::from_secs(5)),
+        )
+        .mount(&server)
+        .await;
+
+    let client = embedrs::Client::openai_compatible("test-key", &server.uri())
+        .with_timeout(std::time::Duration::from_millis(100));
+
+    let start = std::time::Instant::now();
+    let err = client.embed(vec!["test".into()]).await.unwrap_err();
+    let elapsed = start.elapsed();
+
+    assert!(
+        matches!(err, embedrs::Error::Timeout(_)),
+        "expected Timeout error, got {err:?}"
+    );
+    // should have returned well before the 5s delay
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "timeout took too long: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
 async fn no_backoff_fails_immediately() {
     let server = MockServer::start().await;
 

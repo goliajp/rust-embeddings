@@ -20,9 +20,11 @@ pub struct EmbedResult {
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Cloud embedding API client.
+/// Unified embedding client — cloud APIs + local inference through one interface.
 ///
-/// Supports OpenAI, Cohere, Gemini, Voyage, Jina, and compatible APIs.
+/// Supports OpenAI, Cohere, Gemini, Voyage, Jina, compatible APIs, and local models
+/// (behind the `local` feature flag). Use [`crate::cloud()`] or [`crate::local()`]
+/// for opinionated defaults backed by benchmark data.
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -35,164 +37,123 @@ pub struct Client {
 }
 
 impl Client {
-    /// Create a client for OpenAI embedding models.
-    pub fn openai(api_key: impl Into<String>) -> Self {
+    fn new_with_provider(provider: ProviderKind) -> Self {
         Self {
             http: reqwest::Client::new(),
-            provider: ProviderKind::OpenAi {
-                api_key: api_key.into(),
-                base_url: "https://api.openai.com/v1".into(),
-            },
+            provider,
             default_model: None,
             default_dimensions: None,
             default_input_type: None,
             default_backoff: None,
             default_timeout: DEFAULT_TIMEOUT,
         }
+    }
+
+    /// Create a client for OpenAI embedding models.
+    pub fn openai(api_key: impl Into<String>) -> Self {
+        Self::new_with_provider(ProviderKind::OpenAi {
+            api_key: api_key.into(),
+            base_url: "https://api.openai.com/v1".into(),
+        })
     }
 
     /// Create a client for any OpenAI-compatible embedding API.
     pub fn openai_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::OpenAi {
-                api_key: api_key.into(),
-                base_url: base_url.into(),
-            },
-            default_model: None,
-            default_dimensions: None,
-            default_input_type: None,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-        }
+        Self::new_with_provider(ProviderKind::OpenAi {
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+        })
     }
 
     /// Create a client for Cohere embedding models.
     pub fn cohere(api_key: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::Cohere {
-                api_key: api_key.into(),
-                base_url: "https://api.cohere.com/v2".into(),
-            },
-            default_model: None,
-            default_dimensions: None,
-            default_input_type: None,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-        }
+        Self::new_with_provider(ProviderKind::Cohere {
+            api_key: api_key.into(),
+            base_url: "https://api.cohere.com/v2".into(),
+        })
     }
 
     /// Create a client for any Cohere-compatible embedding API.
     pub fn cohere_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::Cohere {
-                api_key: api_key.into(),
-                base_url: base_url.into(),
-            },
-            default_model: None,
-            default_dimensions: None,
-            default_input_type: None,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-        }
+        Self::new_with_provider(ProviderKind::Cohere {
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+        })
     }
 
     /// Create a client for Google Gemini embedding models.
     pub fn gemini(api_key: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::Gemini {
-                api_key: api_key.into(),
-                base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
-            },
-            default_model: None,
-            default_dimensions: None,
-            default_input_type: None,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-        }
+        Self::new_with_provider(ProviderKind::Gemini {
+            api_key: api_key.into(),
+            base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+        })
     }
 
     /// Create a client for any Gemini-compatible embedding API.
     pub fn gemini_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::Gemini {
-                api_key: api_key.into(),
-                base_url: base_url.into(),
-            },
-            default_model: None,
-            default_dimensions: None,
-            default_input_type: None,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-        }
+        Self::new_with_provider(ProviderKind::Gemini {
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+        })
     }
 
     /// Create a client for Voyage AI embedding models.
     pub fn voyage(api_key: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::Voyage {
-                api_key: api_key.into(),
-                base_url: "https://api.voyageai.com/v1".into(),
-            },
-            default_model: None,
-            default_dimensions: None,
-            default_input_type: None,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-        }
+        Self::new_with_provider(ProviderKind::Voyage {
+            api_key: api_key.into(),
+            base_url: "https://api.voyageai.com/v1".into(),
+        })
     }
 
     /// Create a client for any Voyage-compatible embedding API.
     pub fn voyage_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::Voyage {
-                api_key: api_key.into(),
-                base_url: base_url.into(),
-            },
-            default_model: None,
-            default_dimensions: None,
-            default_input_type: None,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-        }
+        Self::new_with_provider(ProviderKind::Voyage {
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+        })
     }
 
     /// Create a client for Jina AI embedding models.
     pub fn jina(api_key: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::Jina {
-                api_key: api_key.into(),
-                base_url: "https://api.jina.ai/v1".into(),
-            },
-            default_model: None,
-            default_dimensions: None,
-            default_input_type: None,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-        }
+        Self::new_with_provider(ProviderKind::Jina {
+            api_key: api_key.into(),
+            base_url: "https://api.jina.ai/v1".into(),
+        })
     }
 
     /// Create a client for any Jina-compatible embedding API.
     pub fn jina_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            provider: ProviderKind::Jina {
-                api_key: api_key.into(),
-                base_url: base_url.into(),
-            },
-            default_model: None,
-            default_dimensions: None,
-            default_input_type: None,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
-        }
+        Self::new_with_provider(ProviderKind::Jina {
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+        })
+    }
+
+    /// Create a client for local model inference using candle.
+    ///
+    /// The model weights are downloaded from HuggingFace Hub on first use
+    /// and cached locally. The tokenizer is embedded in the binary.
+    ///
+    /// Available models: `"all-MiniLM-L6-v2"`
+    ///
+    /// ```rust,no_run
+    /// # async fn run() -> embedrs::Result<()> {
+    /// let client = embedrs::Client::local("all-MiniLM-L6-v2")?;
+    /// let result = client.embed(vec!["hello world".into()]).await?;
+    /// println!("dimensions: {}", result.embeddings[0].len()); // 384
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "local")]
+    pub fn local(model_name: &str) -> Result<Self> {
+        let model_def = crate::local::get_model(model_name)
+            .ok_or_else(|| Error::UnknownModel(model_name.to_string()))?;
+
+        Ok(Self::new_with_provider(ProviderKind::Local {
+            model_def,
+            engine: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        })
+        .with_model(model_name))
     }
 
     /// Set the default model for all embedding requests.
@@ -356,6 +317,11 @@ impl EmbedBuilder<'_> {
     }
 
     async fn execute_inner(self) -> Result<EmbedResult> {
+        let max_batch = self.client.provider.max_batch_size();
+        if self.texts.len() > max_batch {
+            return Err(Error::InputTooLarge(self.texts.len(), max_batch));
+        }
+
         let model = self
             .model
             .as_deref()

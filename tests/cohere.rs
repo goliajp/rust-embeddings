@@ -57,6 +57,39 @@ async fn embed_cohere_with_input_type() {
 }
 
 #[tokio::test]
+async fn embed_cohere_sends_correct_request_body() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/embed"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(mock_cohere_response()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = embedrs::Client::cohere_compatible("cohere-key", &server.uri());
+    let _result = client
+        .embed(vec!["hello".into(), "world".into()])
+        .model("embed-v4.0")
+        .input_type(embedrs::InputType::SearchQuery)
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "embed-v4.0");
+    assert_eq!(body["input_type"], "search_query");
+    assert_eq!(body["embedding_types"], serde_json::json!(["float"]));
+
+    let texts = body["texts"].as_array().unwrap();
+    assert_eq!(texts.len(), 2);
+    assert_eq!(texts[0], "hello");
+    assert_eq!(texts[1], "world");
+}
+
+#[tokio::test]
 async fn embed_cohere_api_error() {
     let server = MockServer::start().await;
 
