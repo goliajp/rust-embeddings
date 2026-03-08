@@ -3,7 +3,7 @@
 //! Unified embedding solution — cloud APIs + local inference through one interface.
 //! Opinionated defaults backed by [benchmark data](https://github.com/goliajp/airs/tree/develop/crates/benchrs).
 //!
-//! ## Design: just works (好用就好用)
+//! ## Design: 用就要好用 (if we build it, it must be great)
 //!
 //! - **`local()`** → all-MiniLM-L6-v2 (23MB, free, no API key)
 //! - **`cloud(key)`** → OpenAI text-embedding-3-small (best discrimination, cheapest)

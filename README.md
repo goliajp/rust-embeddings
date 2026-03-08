@@ -10,7 +10,7 @@ Unified embedding for Rust -- cloud APIs + local inference, one interface, opini
 
 ## Design philosophy
 
-> "好用就好用" -- just works. Pick one best default, backed by data.
+> "用就要好用" -- if we build it, it must be great. Every default backed by data.
 
 - **`embedrs::local()?`** -- all-MiniLM-L6-v2 (23MB, free, no API key)
 - **`embedrs::cloud(key)`** -- OpenAI text-embedding-3-small (best discrimination, cheapest cloud)

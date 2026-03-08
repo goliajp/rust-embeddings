@@ -6,7 +6,7 @@ Every major technical decision in airs is backed by a recorded experiment. Each 
 
 ## Philosophy
 
-> "好用就好用" — embedrs is opinionated by design. Opinions must be backed by data.
+> "用就要好用" — if we build it, it must be great. Opinions must be backed by data.
 
 benchrs is the data. When documentation says "we recommend X over Y", there's an experiment here that proves it.
 
