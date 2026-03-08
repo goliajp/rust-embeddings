@@ -37,7 +37,7 @@ let result = client.embed(vec!["hello world".into()]).await?;
 
 ```toml
 [dependencies]
-embedrs = "0.1"
+embedrs = "0.2"
 
 # enable local inference (adds ~23MB model download on first use)
 embedrs = { version = "0.1", features = ["local"] }
@@ -231,7 +231,7 @@ let c = client.embed(vec!["query".into()])
 ```toml
 [dependencies]
 # cloud only
-embedrs = "0.1"
+embedrs = "0.2"
 
 # cloud + local inference
 embedrs = { version = "0.1", features = ["local"] }
