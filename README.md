@@ -6,46 +6,77 @@
 
 **English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-Unified cloud embedding API client for Rust. One interface for OpenAI, Cohere, Gemini, Voyage, and Jina embedding APIs -- with automatic batching, similarity functions, retry with backoff, and timeout support.
+Unified embedding for Rust -- cloud APIs + local inference, one interface, opinionated defaults.
 
-## Features
+## Design philosophy
 
-- **5 providers** -- OpenAI, Cohere, Google Gemini, Voyage AI, Jina AI (plus compatible API variants)
-- **Automatic batching** -- splits large input sets into provider-appropriate chunks, processes concurrently
-- **Similarity functions** -- cosine similarity, dot product, Euclidean distance
-- **Input type hints** -- search document, search query, classification, clustering
-- **Configurable dimensions** -- request reduced-dimension embeddings where supported
-- **Exponential backoff** -- automatic retry on HTTP 429/503 with jitter
-- **Request timeout** -- overall timeout covering retries and backoff
-- **Builder pattern** -- ergonomic `IntoFuture`-based API (`client.embed(...).await`)
-- **Client defaults** -- set model, dimensions, input type once, override per-request
-- **Optional tracing** -- structured logging via `tracing` crate behind a feature flag
+> "好用就好用" -- just works. Pick one best default, backed by data.
+
+- **`embedrs::local()?`** -- all-MiniLM-L6-v2 (23MB, free, no API key)
+- **`embedrs::cloud(key)`** -- OpenAI text-embedding-3-small (best discrimination, cheapest cloud)
+- Both produce the same `EmbedResult` -- write code once, switch backends in one line
+
+Defaults chosen by 8-dimension benchmark across 8 models. See [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs) for full methodology.
+
+## Quick Start
+
+```rust
+// cloud -- one key, done
+let client = embedrs::cloud("sk-...");
+let result = client.embed(vec!["hello world".into()]).await?;
+println!("dimensions: {}", result.embeddings[0].len());
+```
+
+```rust
+// local -- zero config, free, 23MB model downloaded on first use
+let client = embedrs::local()?;
+let result = client.embed(vec!["hello world".into()]).await?;
+```
 
 ## Installation
 
 ```toml
 [dependencies]
 embedrs = "0.1"
+
+# enable local inference (adds ~23MB model download on first use)
+embedrs = { version = "0.1", features = ["local"] }
 ```
 
-Or via the command line:
+## Benchmark Results
 
-```bash
-cargo add embedrs
-```
+8 dimensions, 184 unique texts. Full methodology and reproduction instructions in [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs).
 
-## Quick Start
+| Metric | MiniLM-L6 | MiniLM-L12 | BGE-small | GTE-small | OpenAI | Gemini | Cohere | Voyage |
+|--------|:---------:|:----------:|:---------:|:---------:|:------:|:------:|:------:|:------:|
+| **Size** | **23MB** | 133MB | 133MB | 67MB | cloud | cloud | cloud | cloud |
+| **Spearman ρ** | 0.81 | 0.84 | 0.71 | 0.75 | 0.91 | **0.94** | 0.91 | 0.89 |
+| **Discrimination** | 0.52 | 0.52 | 0.29 | 0.14 | **0.58** | 0.30 | 0.46 | 0.45 |
+| **Retrieval** | **100%** | **100%** | 89% | **100%** | **100%** | 89% | **100%** | 89% |
+| **EN ρ** | 0.92 | **0.94** | 0.92 | 0.90 | 0.91 | 0.91 | 0.89 | 0.88 |
+| **ZH ρ** | 0.65 | 0.74 | 0.45 | 0.40 | 0.88 | **0.99** | 0.93 | 0.89 |
+| **JA ρ** | 0.60 | 0.90 | 0.20 | 0.50 | 0.90 | **1.00** | **1.00** | 0.90 |
+| **Cross-lingual** | 0.25 | 0.26 | 0.66 | 0.81 | 0.71 | 0.84 | 0.68 | **0.85** |
+| **Robustness** | 0.89 | 0.90 | 0.94 | **0.97** | 0.88 | 0.94 | 0.89 | 0.95 |
+| **Cluster sep.** | **8.73x** | 4.38x | 1.29x | 1.09x | 2.55x | 1.11x | 1.41x | 1.30x |
+| **Cost** | **$0** | **$0** | **$0** | **$0** | $0.02/1M | free tier | $0.10/1M | $0.06/1M |
 
-```rust
-use embedrs::prelude::*;
+### Why MiniLM-L6 for local
 
-let client = Client::openai("sk-...");
+- 23MB -- the only model small enough for app embedding (others are 67-133MB)
+- Best clustering separation at 8.73x (2nd place is 4.38x)
+- 100% retrieval accuracy, EN ρ=0.92
+- 12-layer models are 3-6x larger with no meaningful quality improvement
+- Known weakness: poor on Chinese/Japanese (ρ=0.60-0.65) and cross-lingual (0.25)
 
-let result = client.embed(vec!["hello world".into()]).await?;
+### Why OpenAI for cloud
 
-println!("dimensions: {}", result.embeddings[0].len());
-println!("tokens: {}", result.usage.total_tokens);
-```
+- Best discrimination gap at 0.58 (dissimilar texts avg cosine = 0.09, closest to zero)
+- 100% retrieval accuracy, MRR=1.0
+- Balanced multilingual: EN=0.91, ZH=0.88, JA=0.90 -- no weak language
+- Cheapest cloud option at $0.02/1M tokens
+- Gemini has higher ρ (0.94) but poor discrimination (0.30) and retrieval miss (89%)
+- Cohere matches quality but costs 5x more ($0.10/1M tokens)
 
 ## Providers
 
@@ -56,26 +87,12 @@ println!("tokens: {}", result.usage.total_tokens);
 | Google Gemini | `Client::gemini(key)` | `gemini-embedding-001` | 100 |
 | Voyage AI | `Client::voyage(key)` | `voyage-3-large` | 128 |
 | Jina AI | `Client::jina(key)` | `jina-embeddings-v3` | 2048 |
+| Local | `Client::local(name)?` | `all-MiniLM-L6-v2` | 256 |
 
-Each provider also has a `*_compatible` constructor for proxies or API-compatible services:
+Each cloud provider also has a `*_compatible` constructor for proxies or API-compatible services:
 
 ```rust
-// OpenAI
-let client = Client::openai("sk-...");
-
-// Cohere
-let client = Client::cohere("co-...");
-
-// Google Gemini
-let client = Client::gemini("AIza...");
-
-// Voyage AI
-let client = Client::voyage("pa-...");
-
-// Jina AI
-let client = Client::jina("jina_...");
-
-// OpenAI-compatible (e.g., Azure, proxies)
+// OpenAI-compatible (Azure, proxies, etc.)
 let client = Client::openai_compatible("sk-...", "https://your-proxy.com/v1");
 
 // Cohere-compatible
@@ -93,10 +110,10 @@ let client = Client::jina_compatible("key", "https://proxy.example.com/v1");
 
 ## Batch Embedding
 
-Embed thousands of texts concurrently. Texts are automatically chunked based on the provider's maximum batch size and processed with semaphore-limited concurrency:
+Embed thousands of texts concurrently. Texts are automatically chunked based on the provider's maximum batch size:
 
 ```rust
-let client = Client::openai("sk-...");
+let client = embedrs::cloud("sk-...");
 
 let texts: Vec<String> = (0..5000).map(|i| format!("document {i}")).collect();
 
@@ -108,6 +125,19 @@ let result = client.embed_batch(texts)
 
 println!("total embeddings: {}", result.embeddings.len());
 println!("total tokens: {}", result.usage.total_tokens);
+```
+
+## Similarity Functions
+
+```rust
+use embedrs::{cosine_similarity, dot_product, euclidean_distance};
+
+let a = vec![1.0, 0.0, 0.0];
+let b = vec![0.0, 1.0, 0.0];
+
+let cos = cosine_similarity(&a, &b);    // 0.0 (orthogonal)
+let dot = dot_product(&a, &b);          // 0.0
+let dist = euclidean_distance(&a, &b);  // 1.414...
 ```
 
 ## Input Type
@@ -143,24 +173,7 @@ let result = client.embed(vec!["hello".into()])
 assert_eq!(result.embeddings[0].len(), 256);
 ```
 
-## Similarity Functions
-
-Compute similarity and distance between embedding vectors:
-
-```rust
-use embedrs::{cosine_similarity, dot_product, euclidean_distance};
-
-let a = vec![1.0, 0.0, 0.0];
-let b = vec![0.0, 1.0, 0.0];
-
-let cos = cosine_similarity(&a, &b);    // 0.0 (orthogonal)
-let dot = dot_product(&a, &b);          // 0.0
-let dist = euclidean_distance(&a, &b);  // 1.414...
-```
-
 ## Backoff and Timeout
-
-Enable exponential backoff on HTTP 429/503 errors and set an overall request timeout:
 
 ```rust
 use std::time::Duration;
@@ -211,14 +224,20 @@ let c = client.embed(vec!["query".into()])
 
 | Feature | Default | Description |
 |---|---|---|
-| *(none)* | yes | Core embedding client, all 5 providers |
+| *(none)* | yes | Core embedding client, all 5 cloud providers |
+| `local` | no | Local inference via candle (all-MiniLM-L6-v2, 23MB) |
 | `tracing` | no | Structured logging via the `tracing` crate |
-
-Enable tracing:
 
 ```toml
 [dependencies]
-embedrs = { version = "0.1", features = ["tracing"] }
+# cloud only
+embedrs = "0.1"
+
+# cloud + local inference
+embedrs = { version = "0.1", features = ["local"] }
+
+# with tracing
+embedrs = { version = "0.1", features = ["local", "tracing"] }
 ```
 
 ## License

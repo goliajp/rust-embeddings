@@ -114,13 +114,23 @@ impl<'a> BatchBuilder<'a> {
 
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrency));
         let client = self.client;
-        let model = self.model;
+        let model: Option<Arc<str>> = self.model.map(|s| Arc::from(s.as_str()));
         let dimensions = self.dimensions;
         let input_type = self.input_type;
-        let backoff = self.backoff;
+        let backoff = self.backoff.map(Arc::new);
         let timeout = self.timeout;
 
-        let chunks: Vec<Vec<String>> = self.texts.chunks(chunk_size).map(|c| c.to_vec()).collect();
+        let chunks: Vec<Vec<String>> = {
+            let mut texts = self.texts;
+            let mut result = Vec::with_capacity(texts.len().div_ceil(chunk_size));
+            while !texts.is_empty() {
+                let at = chunk_size.min(texts.len());
+                let rest = texts.split_off(at);
+                result.push(texts);
+                texts = rest;
+            }
+            result
+        };
 
         let handles: Vec<_> = chunks
             .into_iter()
@@ -135,8 +145,8 @@ impl<'a> BatchBuilder<'a> {
                         .await
                         .map_err(|_| crate::error::Error::Other("semaphore closed".into()))?;
                     let mut builder = client.embed(chunk);
-                    if let Some(m) = model {
-                        builder = builder.model(m);
+                    if let Some(ref m) = model {
+                        builder = builder.model(m.as_ref());
                     }
                     if let Some(d) = dimensions {
                         builder = builder.dimensions(d);
@@ -144,8 +154,8 @@ impl<'a> BatchBuilder<'a> {
                     if let Some(it) = input_type {
                         builder = builder.input_type(it);
                     }
-                    if let Some(b) = backoff {
-                        builder = builder.retry_backoff(b);
+                    if let Some(ref b) = backoff {
+                        builder = builder.retry_backoff((**b).clone());
                     }
                     builder = builder.timeout(timeout);
                     builder.await

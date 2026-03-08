@@ -6,39 +6,77 @@
 
 [English](README.md) | **简体中文** | [日本語](README.ja.md)
 
-统一的云端 Embedding API 客户端，支持 OpenAI、Cohere、Gemini、Voyage 和 Jina 五大提供商。
+Rust 统一 Embedding 方案 -- 云端 API + 本地推理，一套接口，开箱即用。
 
-通过一致的接口调用不同提供商的 Embedding API，内置自动分批、指数退避重试和超时控制。
+## 设计理念
 
-## 特性
+> "好用就好用" -- 每个默认值都有数据支撑，拿来就能用。
 
-- 统一接口 -- 一套 API 适配 5 个提供商，切换无需改代码
-- 自动分批 -- 根据提供商限制自动分块，并发处理大规模文本
-- 指数退避 -- HTTP 429/503 错误自动重试，支持抖动
-- 超时控制 -- 可配置的请求级和客户端级超时
-- 输入类型 -- 支持 `SearchDocument`、`SearchQuery`、`Classification`、`Clustering`
-- 维度控制 -- 可指定输出向量维度（提供商支持时）
-- 相似度计算 -- 内置余弦相似度、点积、欧氏距离
-- 兼容 API -- 每个提供商均支持自定义 `base_url`，兼容代理和私有部署
-- 可选 tracing -- 通过 feature flag 集成结构化日志
+- **`embedrs::local()?`** -- all-MiniLM-L6-v2（23MB，免费，无需 API key）
+- **`embedrs::cloud(key)`** -- OpenAI text-embedding-3-small（区分度最佳，价格最低）
+- 两者返回相同的 `EmbedResult` -- 写一次代码，一行切换后端
+
+默认模型经 8 维度 8 模型对比测试选出，完整方法论见 [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs)。
+
+## 快速开始
+
+```rust
+// 云端 -- 一个 key 搞定
+let client = embedrs::cloud("sk-...");
+let result = client.embed(vec!["hello world".into()]).await?;
+println!("dimensions: {}", result.embeddings[0].len());
+```
+
+```rust
+// 本地 -- 零配置，免费，首次使用自动下载 23MB 模型
+let client = embedrs::local()?;
+let result = client.embed(vec!["hello world".into()]).await?;
+```
 
 ## 安装
 
 ```toml
 [dependencies]
 embedrs = "0.1"
+
+# 启用本地推理（首次使用下载约 23MB 模型）
+embedrs = { version = "0.1", features = ["local"] }
 ```
 
-## 快速开始
+## 基准测试结果
 
-```rust
-use embedrs::prelude::*;
+8 个评测维度，184 条测试文本。完整方法论与复现方式见 [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs)。
 
-let client = Client::openai("sk-...");
-let result = client.embed(vec!["hello world".into()]).await?;
-println!("dimensions: {}", result.embeddings[0].len());
-println!("tokens: {}", result.usage.total_tokens);
-```
+| 指标 | MiniLM-L6 | MiniLM-L12 | BGE-small | GTE-small | OpenAI | Gemini | Cohere | Voyage |
+|--------|:---------:|:----------:|:---------:|:---------:|:------:|:------:|:------:|:------:|
+| **模型大小** | **23MB** | 133MB | 133MB | 67MB | 云端 | 云端 | 云端 | 云端 |
+| **Spearman ρ** | 0.81 | 0.84 | 0.71 | 0.75 | 0.91 | **0.94** | 0.91 | 0.89 |
+| **区分度** | 0.52 | 0.52 | 0.29 | 0.14 | **0.58** | 0.30 | 0.46 | 0.45 |
+| **检索准确率** | **100%** | **100%** | 89% | **100%** | **100%** | 89% | **100%** | 89% |
+| **英文 ρ** | 0.92 | **0.94** | 0.92 | 0.90 | 0.91 | 0.91 | 0.89 | 0.88 |
+| **中文 ρ** | 0.65 | 0.74 | 0.45 | 0.40 | 0.88 | **0.99** | 0.93 | 0.89 |
+| **日文 ρ** | 0.60 | 0.90 | 0.20 | 0.50 | 0.90 | **1.00** | **1.00** | 0.90 |
+| **跨语言** | 0.25 | 0.26 | 0.66 | 0.81 | 0.71 | 0.84 | 0.68 | **0.85** |
+| **鲁棒性** | 0.89 | 0.90 | 0.94 | **0.97** | 0.88 | 0.94 | 0.89 | 0.95 |
+| **聚类分离度** | **8.73x** | 4.38x | 1.29x | 1.09x | 2.55x | 1.11x | 1.41x | 1.30x |
+| **费用** | **$0** | **$0** | **$0** | **$0** | $0.02/1M | 免费额度 | $0.10/1M | $0.06/1M |
+
+### 为什么本地选 MiniLM-L6
+
+- 23MB -- 唯一适合嵌入应用的小模型（其余 67-133MB）
+- 聚类分离度 8.73x 碾压第二名 4.38x，能看到数据真实结构
+- 检索 100%，英文 ρ=0.92，超过大部分云端模型
+- 12 层模型大了 3-6 倍，质量没有明显提升
+- 已知短板：中日文较弱（ρ=0.60-0.65），跨语言差（0.25）
+
+### 为什么云端选 OpenAI
+
+- 区分度 0.58 最佳（不相似文本余弦 ≈ 0.09，最接近零）
+- 检索 100%，MRR=1.0
+- 多语言均衡：EN=0.91、ZH=0.88、JA=0.90，没有短板语言
+- 价格最低 $0.02/1M tokens
+- Gemini 相关性更高（0.94）但区分度差（0.30）且检索只有 89%
+- Cohere 质量接近但价格贵 5 倍（$0.10/1M）
 
 ## 服务提供商
 
@@ -47,58 +85,59 @@ println!("tokens: {}", result.usage.total_tokens);
 | OpenAI | `Client::openai(key)` | `text-embedding-3-small` | 2048 |
 | Cohere | `Client::cohere(key)` | `embed-v4.0` | 96 |
 | Google Gemini | `Client::gemini(key)` | `gemini-embedding-001` | 100 |
-| Voyage | `Client::voyage(key)` | `voyage-3-large` | 128 |
-| Jina | `Client::jina(key)` | `jina-embeddings-v3` | 2048 |
+| Voyage AI | `Client::voyage(key)` | `voyage-3-large` | 128 |
+| Jina AI | `Client::jina(key)` | `jina-embeddings-v3` | 2048 |
+| 本地 | `Client::local(name)?` | `all-MiniLM-L6-v2` | 256 |
 
-每个提供商均有对应的 `_compatible` 变体，用于自定义 API 地址：
+每个云端提供商都有 `*_compatible` 变体，用于代理或私有部署：
 
 ```rust
-// OpenAI
-let client = Client::openai("sk-...");
+// OpenAI 兼容（Azure、代理等）
+let client = Client::openai_compatible("sk-...", "https://your-proxy.com/v1");
 
-// Cohere
-let client = Client::cohere("co-...");
+// Cohere 兼容
+let client = Client::cohere_compatible("key", "https://proxy.example.com/v2");
 
-// Google Gemini
-let client = Client::gemini("AIza...");
+// Gemini 兼容
+let client = Client::gemini_compatible("key", "https://proxy.example.com/v1beta");
 
-// Voyage
-let client = Client::voyage("pa-...");
+// Voyage 兼容
+let client = Client::voyage_compatible("key", "https://proxy.example.com/v1");
 
-// Jina
-let client = Client::jina("jina_...");
-
-// OpenAI 兼容 API（自定义地址）
-let client = Client::openai_compatible("sk-...", "https://api.deepseek.com/v1");
-
-// Cohere 兼容代理
-let client = Client::cohere_compatible("co-...", "https://proxy.example.com/v2");
-
-// Gemini 兼容代理
-let client = Client::gemini_compatible("AIza...", "https://proxy.example.com/v1beta");
-
-// Voyage 兼容代理
-let client = Client::voyage_compatible("pa-...", "https://proxy.example.com/v1");
-
-// Jina 兼容代理
-let client = Client::jina_compatible("jina_...", "https://proxy.example.com/v1");
+// Jina 兼容
+let client = Client::jina_compatible("key", "https://proxy.example.com/v1");
 ```
 
 ## 批量 Embedding
 
-通过 `embed_batch` 自动分块并发处理大规模文本，分块大小自动适配提供商限制：
+自动按提供商限制分块，并发处理大规模文本：
 
 ```rust
-let client = Client::openai("sk-...");
+let client = embedrs::cloud("sk-...");
 
-let texts: Vec<String> = (0..5000).map(|i| format!("text {i}")).collect();
+let texts: Vec<String> = (0..5000).map(|i| format!("document {i}")).collect();
+
 let result = client.embed_batch(texts)
     .concurrency(5)       // 最大并发请求数（默认 5）
-    .chunk_size(100)      // 覆盖默认分块大小（可选）
+    .chunk_size(512)       // 每次请求的文本数（默认按提供商上限）
+    .model("text-embedding-3-large")
     .await?;
 
 println!("total embeddings: {}", result.embeddings.len());
 println!("total tokens: {}", result.usage.total_tokens);
+```
+
+## 相似度计算
+
+```rust
+use embedrs::{cosine_similarity, dot_product, euclidean_distance};
+
+let a = vec![1.0, 0.0, 0.0];
+let b = vec![0.0, 1.0, 0.0];
+
+let cos = cosine_similarity(&a, &b);    // 0.0（正交）
+let dot = dot_product(&a, &b);          // 0.0
+let dist = euclidean_distance(&a, &b);  // 1.414...
 ```
 
 ## 输入类型
@@ -108,51 +147,33 @@ println!("total tokens: {}", result.usage.total_tokens);
 ```rust
 use embedrs::InputType;
 
-// 索引文档时
+// 索引文档
 let result = client.embed(docs)
     .input_type(InputType::SearchDocument)
     .await?;
 
-// 搜索查询时
+// 搜索查询
 let result = client.embed(queries)
     .input_type(InputType::SearchQuery)
     .await?;
 ```
 
-支持四种输入类型：`SearchDocument`、`SearchQuery`、`Classification`、`Clustering`。
+可选类型：`SearchDocument`、`SearchQuery`、`Classification`、`Clustering`。
 
 ## 输出维度
 
 指定输出向量维度（适用于支持该参数的提供商）：
 
 ```rust
-let client = Client::openai("sk-...")
-    .with_dimensions(256);
-
-// 或按请求覆盖
 let result = client.embed(vec!["hello".into()])
-    .dimensions(512)
+    .model("text-embedding-3-large")
+    .dimensions(256)
     .await?;
-```
 
-## 相似度计算
-
-内置三种向量相似度/距离函数：
-
-```rust
-use embedrs::{cosine_similarity, dot_product, euclidean_distance};
-
-let a = vec![1.0, 0.0, 0.0];
-let b = vec![0.0, 1.0, 0.0];
-
-let cos = cosine_similarity(&a, &b);   // 0.0（正交）
-let dot = dot_product(&a, &b);         // 0.0
-let dist = euclidean_distance(&a, &b); // 1.414...
+assert_eq!(result.embeddings[0].len(), 256);
 ```
 
 ## 重试与超时
-
-启用 HTTP 429/503 错误的指数退避重试，并设置整体请求超时：
 
 ```rust
 use std::time::Duration;
@@ -174,7 +195,7 @@ let result = client.embed(vec!["hello".into()])
     .await?;
 ```
 
-未配置退避时，HTTP 429/503 错误将立即失败（默认行为不变）。
+未配置退避时，HTTP 429/503 错误立即失败。
 
 ## 客户端默认值
 
@@ -189,11 +210,11 @@ let client = Client::openai("sk-...")
     .with_timeout(Duration::from_secs(120));
 
 // 所有请求使用上述默认值
-let r1 = client.embed(vec!["text 1".into()]).await?;
-let r2 = client.embed(vec!["text 2".into()]).await?;
+let a = client.embed(vec!["doc 1".into()]).await?;
+let b = client.embed(vec!["doc 2".into()]).await?;
 
-// 针对特定请求覆盖默认值
-let r3 = client.embed(vec!["query".into()])
+// 针对特定请求覆盖
+let c = client.embed(vec!["query".into()])
     .model("text-embedding-3-small")
     .input_type(InputType::SearchQuery)
     .await?;
@@ -201,16 +222,22 @@ let r3 = client.embed(vec!["query".into()])
 
 ## Feature Flags
 
-| Feature | 默认启用 | 说明 |
+| Feature | 默认 | 说明 |
 |---|---|---|
-| (default) | -- | 核心 Embedding 功能，无额外依赖 |
-| `tracing` | 否 | 集成 `tracing` crate，输出结构化日志（provider、model、token 数等） |
-
-启用 tracing：
+| *(none)* | 是 | 核心功能，5 个云端提供商 |
+| `local` | 否 | 本地推理，基于 candle（all-MiniLM-L6-v2，23MB） |
+| `tracing` | 否 | 通过 `tracing` crate 输出结构化日志 |
 
 ```toml
 [dependencies]
-embedrs = { version = "0.1", features = ["tracing"] }
+# 仅云端
+embedrs = "0.1"
+
+# 云端 + 本地推理
+embedrs = { version = "0.1", features = ["local"] }
+
+# 启用 tracing
+embedrs = { version = "0.1", features = ["local", "tracing"] }
 ```
 
 ## 许可证

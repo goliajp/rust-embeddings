@@ -50,3 +50,45 @@ async fn embed_jina_with_dimensions_and_task() {
         .unwrap();
     assert!(!result.embeddings.is_empty());
 }
+
+#[tokio::test]
+async fn embed_jina_api_error_429() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+        .mount(&server)
+        .await;
+
+    let client = embedrs::Client::jina_compatible("jina-key", &server.uri());
+    let err = client.embed(vec!["test".into()]).await.unwrap_err();
+    match err {
+        embedrs::Error::Api { status, message } => {
+            assert_eq!(status, 429);
+            assert!(message.contains("rate limited"));
+        }
+        _ => panic!("expected Api error, got {err:?}"),
+    }
+}
+
+#[tokio::test]
+async fn embed_jina_api_error_500() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("internal server error"))
+        .mount(&server)
+        .await;
+
+    let client = embedrs::Client::jina_compatible("jina-key", &server.uri());
+    let err = client.embed(vec!["test".into()]).await.unwrap_err();
+    match err {
+        embedrs::Error::Api { status, message } => {
+            assert_eq!(status, 500);
+            assert!(message.contains("internal server error"));
+        }
+        _ => panic!("expected Api error, got {err:?}"),
+    }
+}

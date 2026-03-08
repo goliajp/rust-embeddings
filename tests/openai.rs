@@ -72,6 +72,38 @@ async fn embed_openai_with_model() {
 }
 
 #[tokio::test]
+async fn embed_openai_sends_correct_request_body() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(mock_openai_response()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = embedrs::Client::openai_compatible("test-key", &server.uri()).with_dimensions(256);
+    let _result = client
+        .embed(vec!["hello".into(), "world".into()])
+        .model("text-embedding-3-large")
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "text-embedding-3-large");
+    assert_eq!(body["encoding_format"], "float");
+    assert_eq!(body["dimensions"], 256);
+
+    let input = body["input"].as_array().unwrap();
+    assert_eq!(input.len(), 2);
+    assert_eq!(input[0], "hello");
+    assert_eq!(input[1], "world");
+}
+
+#[tokio::test]
 async fn embed_openai_api_error() {
     let server = MockServer::start().await;
 
