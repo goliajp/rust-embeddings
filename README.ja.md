@@ -40,7 +40,7 @@ let result = client.embed(vec!["hello world".into()]).await?;
 embedrs = "0.2"
 
 # ローカル推論を有効化（初回使用時に約 23MB のモデルをダウンロード）
-embedrs = { version = "0.2", features = ["local"] }
+embedrs = { version = "0.3", features = ["local"] }
 ```
 
 ## ベンチマーク結果
@@ -235,13 +235,13 @@ let c = client.embed(vec!["query".into()])
 embedrs = "0.2"
 
 # クラウド + ローカル推論
-embedrs = { version = "0.2", features = ["local"] }
+embedrs = { version = "0.3", features = ["local"] }
 
 # コスト追跡付き
-embedrs = { version = "0.2", features = ["cost-tracking"] }
+embedrs = { version = "0.3", features = ["cost-tracking"] }
 
 # tracing 付き
-embedrs = { version = "0.2", features = ["local", "tracing"] }
+embedrs = { version = "0.3", features = ["local", "tracing"] }
 ```
 
 ## プロバイダーフォールバック
@@ -268,7 +268,7 @@ let client = embedrs::Client::openai("sk-...")
 `cost-tracking` フィーチャーを有効にすると、リクエストごとの推定コストを取得可能:
 
 ```toml
-embedrs = { version = "0.2", features = ["cost-tracking"] }
+embedrs = { version = "0.3", features = ["cost-tracking"] }
 ```
 
 ```rust

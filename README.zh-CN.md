@@ -40,7 +40,7 @@ let result = client.embed(vec!["hello world".into()]).await?;
 embedrs = "0.2"
 
 # 启用本地推理（首次使用下载约 23MB 模型）
-embedrs = { version = "0.2", features = ["local"] }
+embedrs = { version = "0.3", features = ["local"] }
 ```
 
 ## 基准测试结果
@@ -235,13 +235,13 @@ let c = client.embed(vec!["query".into()])
 embedrs = "0.2"
 
 # 云端 + 本地推理
-embedrs = { version = "0.2", features = ["local"] }
+embedrs = { version = "0.3", features = ["local"] }
 
 # 启用费用追踪
-embedrs = { version = "0.2", features = ["cost-tracking"] }
+embedrs = { version = "0.3", features = ["cost-tracking"] }
 
 # 启用 tracing
-embedrs = { version = "0.2", features = ["local", "tracing"] }
+embedrs = { version = "0.3", features = ["local", "tracing"] }
 ```
 
 ## 提供商回退
@@ -268,7 +268,7 @@ let client = embedrs::Client::openai("sk-...")
 启用 `cost-tracking` feature 可获取每次请求的费用估算：
 
 ```toml
-embedrs = { version = "0.2", features = ["cost-tracking"] }
+embedrs = { version = "0.3", features = ["cost-tracking"] }
 ```
 
 ```rust

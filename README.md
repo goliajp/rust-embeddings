@@ -40,7 +40,7 @@ let result = client.embed(vec!["hello world".into()]).await?;
 embedrs = "0.2"
 
 # enable local inference (adds ~23MB model download on first use)
-embedrs = { version = "0.2", features = ["local"] }
+embedrs = { version = "0.3", features = ["local"] }
 ```
 
 ## Benchmark Results
@@ -235,13 +235,13 @@ let c = client.embed(vec!["query".into()])
 embedrs = "0.2"
 
 # cloud + local inference
-embedrs = { version = "0.2", features = ["local"] }
+embedrs = { version = "0.3", features = ["local"] }
 
 # with cost tracking
-embedrs = { version = "0.2", features = ["cost-tracking"] }
+embedrs = { version = "0.3", features = ["cost-tracking"] }
 
 # with tracing
-embedrs = { version = "0.2", features = ["local", "tracing"] }
+embedrs = { version = "0.3", features = ["local", "tracing"] }
 ```
 
 ## Provider Fallback
@@ -268,7 +268,7 @@ let client = embedrs::Client::openai("sk-...")
 Enable the `cost-tracking` feature to get estimated cost per request:
 
 ```toml
-embedrs = { version = "0.2", features = ["cost-tracking"] }
+embedrs = { version = "0.3", features = ["cost-tracking"] }
 ```
 
 ```rust
