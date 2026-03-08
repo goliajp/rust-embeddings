@@ -174,6 +174,8 @@ impl<'a> BatchBuilder<'a> {
             let embed_result = result?;
             all_embeddings.extend(embed_result.embeddings);
             total_usage.accumulate(embed_result.usage.total_tokens);
+            #[cfg(feature = "cost-tracking")]
+            total_usage.accumulate_cost(embed_result.usage.cost);
             if result_model.is_empty() {
                 result_model = embed_result.model;
             }

@@ -3,6 +3,7 @@ mod inference;
 mod model;
 
 pub(crate) use inference::InferenceEngine;
+pub(crate) use model::default_model;
 pub use model::{ModelDefinition, PoolingStrategy};
 
 /// Get a model definition by name. Returns `None` if the model is not recognized.
