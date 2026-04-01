@@ -40,6 +40,10 @@ local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tok
 name = "benchmark"
 required-features = ["local"]
 
+[[example]]
+name = "local"
+required-features = ["local"]
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
