@@ -3,14 +3,16 @@
 [![Crates.io](https://img.shields.io/crates/v/embedrs?style=flat-square&logo=rust)](https://crates.io/crates/embedrs)
 [![docs.rs](https://img.shields.io/docsrs/embedrs?style=flat-square&logo=docs.rs)](https://docs.rs/embedrs)
 [![License](https://img.shields.io/crates/l/embedrs?style=flat-square)](LICENSE)
+[![Downloads](https://img.shields.io/crates/d/embedrs?style=flat-square)](https://crates.io/crates/embedrs)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue?style=flat-square)](https://www.rust-lang.org)
 
 [English](README.md) | [简体中文](README.zh-CN.md) | **日本語**
 
-Rust 向け統一 Embedding ソリューション -- クラウド API + ローカル推論を単一インターフェースで。データに基づくデフォルト選定。
+Rust 向け統一 Embedding ソリューション -- 6 つのクラウドプロバイダー + ローカル推論を単一インターフェースで。8 モデルベンチマークデータに基づくデフォルト選定。
 
 ## 設計思想
 
-> "用就要好用" -- 作るからには最高のものを。すべてのデフォルトはデータに裏付けられています。
+> 作るからには最高のものを -- すべてのデフォルトはデータに裏付けられています。
 
 - **`embedrs::local()?`** -- all-MiniLM-L6-v2（23MB、無料、API キー不要）
 - **`embedrs::cloud(key)`** -- OpenAI text-embedding-3-small（識別性能最高、最安値）
@@ -37,10 +39,34 @@ let result = client.embed(vec!["hello world".into()]).await?;
 
 ```toml
 [dependencies]
-embedrs = "0.2"
+embedrs = "0.3"
 
 # ローカル推論を有効化（初回使用時に約 23MB のモデルをダウンロード）
 embedrs = { version = "0.3", features = ["local"] }
+```
+
+## Feature フラグ
+
+| Feature | デフォルト | 説明 |
+|---|---|---|
+| *(なし)* | 有効 | コア機能、5 クラウドプロバイダー |
+| `local` | 無効 | candle によるローカル推論（all-MiniLM-L6-v2、23MB） |
+| `cost-tracking` | 無効 | `tiktoken` の価格データによるリクエストごとのコスト推定 |
+| `tracing` | 無効 | `tracing` クレートによる構造化ログ |
+
+```toml
+[dependencies]
+# クラウドのみ
+embedrs = "0.3"
+
+# クラウド + ローカル推論
+embedrs = { version = "0.3", features = ["local"] }
+
+# コスト追跡付き
+embedrs = { version = "0.3", features = ["cost-tracking"] }
+
+# tracing 付き
+embedrs = { version = "0.3", features = ["local", "tracing"] }
 ```
 
 ## ベンチマーク結果
@@ -220,30 +246,6 @@ let c = client.embed(vec!["query".into()])
     .await?;
 ```
 
-## Feature フラグ
-
-| Feature | デフォルト | 説明 |
-|---|---|---|
-| *(なし)* | 有効 | コア機能、5 クラウドプロバイダー |
-| `local` | 無効 | candle によるローカル推論（all-MiniLM-L6-v2、23MB） |
-| `cost-tracking` | 無効 | `tiktoken` の価格データによるリクエストごとのコスト推定 |
-| `tracing` | 無効 | `tracing` クレートによる構造化ログ |
-
-```toml
-[dependencies]
-# クラウドのみ
-embedrs = "0.2"
-
-# クラウド + ローカル推論
-embedrs = { version = "0.3", features = ["local"] }
-
-# コスト追跡付き
-embedrs = { version = "0.3", features = ["cost-tracking"] }
-
-# tracing 付き
-embedrs = { version = "0.3", features = ["local", "tracing"] }
-```
-
 ## プロバイダーフォールバック
 
 フォールバックプロバイダーをチェーンして、プライマリが利用不可の場合に自動切り替え:
@@ -298,6 +300,32 @@ match client.embed(vec!["hello".into()]).await {
 }
 # }
 ```
+
+## なぜ embedrs？
+
+| 比較項目 | embedrs | fastembed-rs | 素の reqwest |
+|---|---|---|---|
+| クラウドプロバイダー | 5 社内蔵（OpenAI、Cohere、Gemini、Voyage、Jina） | なし | プロバイダーごとに手動実装 |
+| ローカル推論 | candle ベース、デフォルト 23MB モデル | ONNX Runtime、複数モデル | 非対応 |
+| 統一インターフェース | クラウドとローカルで同じ `EmbedResult` | ローカルのみ | 非対応 |
+| バッチ自動分割 | プロバイダー上限に応じた自動分割 + 並行処理 | 手動 | 手動 |
+| プロバイダーフォールバック | 内蔵 `.with_fallback()` チェーン | 非対応 | 手動 |
+| データ駆動デフォルト | 8 次元 8 モデルベンチマーク（[benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs)） | 公開ベンチマークなし | 非対応 |
+| バックオフとタイムアウト | 指数バックオフ内蔵、429/503 自動処理 | 非対応 | 手動 |
+
+**fastembed-rs** はローカル ONNX Runtime 推論のみで十分な場合には優れた選択肢です。**embedrs** はクラウド + ローカルを単一 API で統合し、データに裏付けられたデフォルトとフォールバック・バックオフなどの本番向け機能を提供します。
+
+## エコシステム
+
+embedrs は [airs](https://github.com/goliajp/airs)（AI in Rust Series）の一部です：
+
+| クレート | 説明 |
+|---|---|
+| [tiktoken](https://crates.io/crates/tiktoken) | 主要 LLM 全対応の高性能 BPE トークナイザー |
+| [instructors](https://crates.io/crates/instructors) | LLM からの型安全な構造化出力抽出 |
+| [embedrs](https://crates.io/crates/embedrs) | 統一 Embedding -- クラウド + ローカル（本クレート） |
+| [chunkedrs](https://crates.io/crates/chunkedrs) | Embedding・検索向け AI ネイティブテキストチャンキング |
+| [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs) | airs の技術的意思決定のための再現可能なベンチマーク実験 |
 
 ## ライセンス
 
