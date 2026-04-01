@@ -3,14 +3,16 @@
 [![Crates.io](https://img.shields.io/crates/v/embedrs?style=flat-square&logo=rust)](https://crates.io/crates/embedrs)
 [![docs.rs](https://img.shields.io/docsrs/embedrs?style=flat-square&logo=docs.rs)](https://docs.rs/embedrs)
 [![License](https://img.shields.io/crates/l/embedrs?style=flat-square)](LICENSE)
+[![Downloads](https://img.shields.io/crates/d/embedrs?style=flat-square)](https://crates.io/crates/embedrs)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue?style=flat-square)](https://www.rust-lang.org)
 
 **English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-Unified embedding for Rust -- cloud APIs + local inference, one interface, opinionated defaults.
+Unified embedding for Rust -- 6 cloud providers + local inference through one interface. Opinionated defaults backed by 8-model benchmark data.
 
 ## Design philosophy
 
-> "用就要好用" -- if we build it, it must be great. Every default backed by data.
+> If we build it, it must be great -- every default backed by data.
 
 - **`embedrs::local()?`** -- all-MiniLM-L6-v2 (23MB, free, no API key)
 - **`embedrs::cloud(key)`** -- OpenAI text-embedding-3-small (best discrimination, cheapest cloud)
@@ -37,10 +39,34 @@ let result = client.embed(vec!["hello world".into()]).await?;
 
 ```toml
 [dependencies]
-embedrs = "0.2"
+embedrs = "0.3"
 
 # enable local inference (adds ~23MB model download on first use)
 embedrs = { version = "0.3", features = ["local"] }
+```
+
+## Feature Flags
+
+| Feature | Default | Description |
+|---|---|---|
+| *(none)* | yes | Core embedding client, all 5 cloud providers |
+| `local` | no | Local inference via candle (all-MiniLM-L6-v2, 23MB) |
+| `cost-tracking` | no | Estimated cost per request via `tiktoken` pricing data |
+| `tracing` | no | Structured logging via the `tracing` crate |
+
+```toml
+[dependencies]
+# cloud only
+embedrs = "0.3"
+
+# cloud + local inference
+embedrs = { version = "0.3", features = ["local"] }
+
+# with cost tracking
+embedrs = { version = "0.3", features = ["cost-tracking"] }
+
+# with tracing
+embedrs = { version = "0.3", features = ["local", "tracing"] }
 ```
 
 ## Benchmark Results
@@ -220,30 +246,6 @@ let c = client.embed(vec!["query".into()])
     .await?;
 ```
 
-## Feature Flags
-
-| Feature | Default | Description |
-|---|---|---|
-| *(none)* | yes | Core embedding client, all 5 cloud providers |
-| `local` | no | Local inference via candle (all-MiniLM-L6-v2, 23MB) |
-| `cost-tracking` | no | Estimated cost per request via `tiktoken` pricing data |
-| `tracing` | no | Structured logging via the `tracing` crate |
-
-```toml
-[dependencies]
-# cloud only
-embedrs = "0.2"
-
-# cloud + local inference
-embedrs = { version = "0.3", features = ["local"] }
-
-# with cost tracking
-embedrs = { version = "0.3", features = ["cost-tracking"] }
-
-# with tracing
-embedrs = { version = "0.3", features = ["local", "tracing"] }
-```
-
 ## Provider Fallback
 
 Chain fallback providers for automatic failover when the primary provider is unavailable:
@@ -298,6 +300,32 @@ match client.embed(vec!["hello".into()]).await {
 }
 # }
 ```
+
+## Why embedrs?
+
+| Aspect | embedrs | fastembed-rs | Raw reqwest |
+|---|---|---|---|
+| Cloud providers | 5 built-in (OpenAI, Cohere, Gemini, Voyage, Jina) | None | Manual per provider |
+| Local inference | candle-based, 23MB default model | ONNX Runtime, multiple models | N/A |
+| Unified interface | Same `EmbedResult` for cloud and local | Local only | N/A |
+| Batch auto-chunking | Automatic by provider limits + concurrency | Manual | Manual |
+| Provider fallback | Built-in `.with_fallback()` chain | N/A | Manual |
+| Data-driven defaults | 8-dimension benchmark across 8 models ([benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs)) | No published benchmark | N/A |
+| Backoff & timeout | Built-in exponential backoff on 429/503 | N/A | Manual |
+
+**fastembed-rs** is a solid choice if you only need local inference with ONNX Runtime and don't need cloud providers. **embedrs** is designed for applications that need both cloud and local through a single API, with opinionated defaults and production features like fallback and backoff.
+
+## Ecosystem
+
+embedrs is part of [airs](https://github.com/goliajp/airs) (AI in Rust Series):
+
+| Crate | Description |
+|---|---|
+| [tiktoken](https://crates.io/crates/tiktoken) | High-performance BPE tokenizer for all mainstream LLMs |
+| [instructors](https://crates.io/crates/instructors) | Type-safe structured output extraction from LLMs |
+| [embedrs](https://crates.io/crates/embedrs) | Unified embedding -- cloud + local (this crate) |
+| [chunkedrs](https://crates.io/crates/chunkedrs) | AI-native text chunking for embedding and retrieval |
+| [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs) | Reproducible benchmark experiments for airs decisions |
 
 ## License
 

@@ -3,10 +3,12 @@
 [![Crates.io](https://img.shields.io/crates/v/embedrs?style=flat-square&logo=rust)](https://crates.io/crates/embedrs)
 [![docs.rs](https://img.shields.io/docsrs/embedrs?style=flat-square&logo=docs.rs)](https://docs.rs/embedrs)
 [![License](https://img.shields.io/crates/l/embedrs?style=flat-square)](LICENSE)
+[![Downloads](https://img.shields.io/crates/d/embedrs?style=flat-square)](https://crates.io/crates/embedrs)
+[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue?style=flat-square)](https://www.rust-lang.org)
 
 [English](README.md) | **简体中文** | [日本語](README.ja.md)
 
-Rust 统一 Embedding 方案 -- 云端 API + 本地推理，一套接口，开箱即用。
+Rust 统一 Embedding 方案 -- 6 家云端提供商 + 本地推理，一套接口搞定。默认值基于 8 模型基准测试数据。
 
 ## 设计理念
 
@@ -37,10 +39,34 @@ let result = client.embed(vec!["hello world".into()]).await?;
 
 ```toml
 [dependencies]
-embedrs = "0.2"
+embedrs = "0.3"
 
 # 启用本地推理（首次使用下载约 23MB 模型）
 embedrs = { version = "0.3", features = ["local"] }
+```
+
+## Feature Flags
+
+| Feature | 默认 | 说明 |
+|---|---|---|
+| *(none)* | 是 | 核心功能，5 个云端提供商 |
+| `local` | 否 | 本地推理，基于 candle（all-MiniLM-L6-v2，23MB） |
+| `cost-tracking` | 否 | 通过 `tiktoken` 定价数据估算每次请求的费用 |
+| `tracing` | 否 | 通过 `tracing` crate 输出结构化日志 |
+
+```toml
+[dependencies]
+# 仅云端
+embedrs = "0.3"
+
+# 云端 + 本地推理
+embedrs = { version = "0.3", features = ["local"] }
+
+# 启用费用追踪
+embedrs = { version = "0.3", features = ["cost-tracking"] }
+
+# 启用 tracing
+embedrs = { version = "0.3", features = ["local", "tracing"] }
 ```
 
 ## 基准测试结果
@@ -220,30 +246,6 @@ let c = client.embed(vec!["query".into()])
     .await?;
 ```
 
-## Feature Flags
-
-| Feature | 默认 | 说明 |
-|---|---|---|
-| *(none)* | 是 | 核心功能，5 个云端提供商 |
-| `local` | 否 | 本地推理，基于 candle（all-MiniLM-L6-v2，23MB） |
-| `cost-tracking` | 否 | 通过 `tiktoken` 定价数据估算每次请求的费用 |
-| `tracing` | 否 | 通过 `tracing` crate 输出结构化日志 |
-
-```toml
-[dependencies]
-# 仅云端
-embedrs = "0.2"
-
-# 云端 + 本地推理
-embedrs = { version = "0.3", features = ["local"] }
-
-# 启用费用追踪
-embedrs = { version = "0.3", features = ["cost-tracking"] }
-
-# 启用 tracing
-embedrs = { version = "0.3", features = ["local", "tracing"] }
-```
-
 ## 提供商回退
 
 链式配置回退提供商，主提供商不可用时自动切换：
@@ -298,6 +300,32 @@ match client.embed(vec!["hello".into()]).await {
 }
 # }
 ```
+
+## 为什么选 embedrs？
+
+| 对比维度 | embedrs | fastembed-rs | 裸写 reqwest |
+|---|---|---|---|
+| 云端提供商 | 内置 5 家（OpenAI、Cohere、Gemini、Voyage、Jina） | 无 | 每家手动对接 |
+| 本地推理 | 基于 candle，默认 23MB 模型 | ONNX Runtime，多种模型 | 不适用 |
+| 统一接口 | 云端和本地返回相同 `EmbedResult` | 仅本地 | 不适用 |
+| 批量自动分块 | 按提供商限制自动分块 + 并发 | 手动 | 手动 |
+| 提供商回退 | 内置 `.with_fallback()` 链式调用 | 不适用 | 手动 |
+| 数据驱动默认值 | 8 维度 8 模型基准测试（[benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs)） | 无公开基准测试 | 不适用 |
+| 退避与超时 | 内置指数退避，自动处理 429/503 | 不适用 | 手动 |
+
+**fastembed-rs** 如果只需本地 ONNX Runtime 推理且不需要云端提供商，是不错的选择。**embedrs** 面向需要云端 + 本地统一 API 的场景，提供开箱即用的默认值和生产级特性（回退、退避等）。
+
+## 生态系统
+
+embedrs 是 [airs](https://github.com/goliajp/airs)（AI in Rust Series）的一部分：
+
+| Crate | 说明 |
+|---|---|
+| [tiktoken](https://crates.io/crates/tiktoken) | 高性能 BPE 分词器，支持所有主流 LLM |
+| [instructors](https://crates.io/crates/instructors) | 类型安全的 LLM 结构化输出提取 |
+| [embedrs](https://crates.io/crates/embedrs) | 统一 Embedding -- 云端 + 本地（本 crate） |
+| [chunkedrs](https://crates.io/crates/chunkedrs) | AI 原生文本分块，用于 Embedding 和检索 |
+| [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs) | 可复现的基准测试实验 |
 
 ## 许可证
 
