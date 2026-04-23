@@ -1,6 +1,6 @@
 [package]
 name = "embedrs"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version = "1.94"
 description = "Unified embedding — cloud APIs (OpenAI, Cohere, Gemini, Voyage, Jina) + local inference, one interface"
