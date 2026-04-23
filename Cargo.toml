@@ -1,0 +1,62 @@
+[package]
+name = "embedrs"
+version = "0.3.2"
+edition = "2024"
+rust-version = "1.94"
+description = "Unified embedding — cloud APIs (OpenAI, Cohere, Gemini, Voyage, Jina) + local inference, one interface"
+license = "MIT"
+repository = "https://github.com/goliajp/rust-embeddings"
+homepage = "https://github.com/goliajp/rust-embeddings"
+authors = ["GOLIA株式会社", "Li Hao <lihao@golia.jp>"]
+documentation = "https://docs.rs/embedrs"
+keywords = ["embedding", "openai", "cohere", "vector", "ai"]
+categories = ["api-bindings"]
+readme = "README.md"
+exclude = ["examples/embedding_models/data.json.zst"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+tokio = { version = "1", features = ["sync", "time"] }
+thiserror = "2"
+rand = "0.10"
+futures = "0.3"
+tracing = { version = "0.1", optional = true }
+tiktoken = { version = "3.1", optional = true }
+candle-core = { version = "0.10", optional = true }
+candle-nn = { version = "0.10", optional = true }
+candle-transformers = { version = "0.10", optional = true }
+tokenizers = { version = "0.22", optional = true, default-features = false, features = ["onig"] }
+hf-hub = { version = "0.5", optional = true, features = ["tokio"] }
+ruzstd = { version = "0.8", optional = true }
+
+[features]
+default = []
+tracing = ["dep:tracing"]
+cost-tracking = ["tiktoken"]
+local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:hf-hub", "dep:ruzstd"]
+
+[[example]]
+name = "benchmark"
+required-features = ["local"]
+
+[[example]]
+name = "local"
+required-features = ["local"]
+
+[[example]]
+name = "embedding_models"
+path = "examples/embedding_models/main.rs"
+required-features = ["local"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"
+dotenvy = "0.15"
+# for examples/embedding_models (uses zstd compression when re-recording)
+zstd = "0.13"
+
+[profile.release]
+lto = true
+codegen-units = 1
