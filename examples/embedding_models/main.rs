@@ -1,4 +1,5 @@
-use benchrs::stats;
+#[path = "stats.rs"]
+mod stats;
 use serde::{Deserialize, Serialize};
 /// # Experiment: Embedding Model Selection
 ///
@@ -84,7 +85,7 @@ struct Metadata {
 
 const DATA_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/data/embedding_models.json.zst"
+    "/examples/embedding_models/data.json.zst"
 );
 
 #[tokio::main]
