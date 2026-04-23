@@ -18,7 +18,7 @@ Unified embedding for Rust -- 6 cloud providers + local inference through one in
 - **`embedrs::cloud(key)`** -- OpenAI text-embedding-3-small (best discrimination, cheapest cloud)
 - Both produce the same `EmbedResult` -- write code once, switch backends in one line
 
-Defaults chosen by 8-dimension benchmark across 8 models. See [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs) for full methodology.
+Defaults chosen by 8-dimension benchmark across 8 models. See [`examples/embedding_models/`](examples/embedding_models/) for the full reproducible experiment.
 
 ## Quick Start
 
@@ -71,7 +71,7 @@ embedrs = { version = "0.3", features = ["local", "tracing"] }
 
 ## Benchmark Results
 
-8 dimensions, 184 unique texts. Full methodology and reproduction instructions in [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs).
+8 dimensions, 184 unique texts. Full methodology and reproduction instructions in [`examples/embedding_models/`](examples/embedding_models/) — run with `cargo run --example embedding_models --features local --release`.
 
 | Metric | MiniLM-L6 | MiniLM-L12 | BGE-small | GTE-small | OpenAI | Gemini | Cohere | Voyage |
 |--------|:---------:|:----------:|:---------:|:---------:|:------:|:------:|:------:|:------:|
@@ -310,22 +310,21 @@ match client.embed(vec!["hello".into()]).await {
 | Unified interface | Same `EmbedResult` for cloud and local | Local only | N/A |
 | Batch auto-chunking | Automatic by provider limits + concurrency | Manual | Manual |
 | Provider fallback | Built-in `.with_fallback()` chain | N/A | Manual |
-| Data-driven defaults | 8-dimension benchmark across 8 models ([benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs)) | No published benchmark | N/A |
+| Data-driven defaults | 8-dimension benchmark across 8 models ([`examples/embedding_models/`](examples/embedding_models/)) | No published benchmark | N/A |
 | Backoff & timeout | Built-in exponential backoff on 429/503 | N/A | Manual |
 
 **fastembed-rs** is a solid choice if you only need local inference with ONNX Runtime and don't need cloud providers. **embedrs** is designed for applications that need both cloud and local through a single API, with opinionated defaults and production features like fallback and backoff.
 
 ## Ecosystem
 
-embedrs is part of [airs](https://github.com/goliajp/airs) (AI in Rust Series):
+Part of a family of independent AI-infrastructure crates by GOLIA, each in its own repo:
 
-| Crate | Description |
-|---|---|
-| [tiktoken](https://crates.io/crates/tiktoken) | High-performance BPE tokenizer for all mainstream LLMs |
-| [instructors](https://crates.io/crates/instructors) | Type-safe structured output extraction from LLMs |
-| [embedrs](https://crates.io/crates/embedrs) | Unified embedding -- cloud + local (this crate) |
-| [chunkedrs](https://crates.io/crates/chunkedrs) | AI-native text chunking for embedding and retrieval |
-| [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs) | Reproducible benchmark experiments for airs decisions |
+| Crate | Repo | Description |
+|---|---|---|
+| [tiktoken](https://crates.io/crates/tiktoken) | [rust-tiktoken](https://github.com/goliajp/rust-tiktoken) | High-performance BPE tokenizer for all mainstream LLMs |
+| [instructors](https://crates.io/crates/instructors) | [rust-instructor](https://github.com/goliajp/rust-instructor) | Type-safe structured output extraction from LLMs |
+| **embedrs** | [rust-embeddings](https://github.com/goliajp/rust-embeddings) | Unified embedding -- cloud + local (this crate) |
+| [chunkedrs](https://crates.io/crates/chunkedrs) | [rust-chunker](https://github.com/goliajp/rust-chunker) | AI-native text chunking for embedding and retrieval |
 
 ## License
 
