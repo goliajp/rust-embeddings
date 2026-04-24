@@ -315,16 +315,21 @@ match client.embed(vec!["hello".into()]).await {
 
 **fastembed-rs** is a solid choice if you only need local inference with ONNX Runtime and don't need cloud providers. **embedrs** is designed for applications that need both cloud and local through a single API, with opinionated defaults and production features like fallback and backoff.
 
+<!-- ECOSYSTEM BEGIN (synced by claws/opensource/scripts/sync-ecosystem.py — edit ecosystem.toml, not this block) -->
+
 ## Ecosystem
 
-Part of a family of independent AI-infrastructure crates by GOLIA, each in its own repo:
+Part of GOLIA's Rust AI-infrastructure family — independent crates in their own repos, composable through crates.io:
 
-| Crate | Repo | Description |
+| Crate / Package | Repo | Description |
 |---|---|---|
-| [tiktoken](https://crates.io/crates/tiktoken) | [rust-tiktoken](https://github.com/goliajp/rust-tiktoken) | High-performance BPE tokenizer for all mainstream LLMs |
+| [tiktoken](https://crates.io/crates/tiktoken) | [rust-tiktoken](https://github.com/goliajp/rust-tiktoken) | High-performance BPE tokenizer — 9 encodings, 57 models, multi-provider pricing |
+| [@goliapkg/tiktoken-wasm](https://www.npmjs.com/package/@goliapkg/tiktoken-wasm) | [rust-tiktoken](https://github.com/goliajp/rust-tiktoken) | WASM bindings for tiktoken — browser / Node.js |
 | [instructors](https://crates.io/crates/instructors) | [rust-instructor](https://github.com/goliajp/rust-instructor) | Type-safe structured output extraction from LLMs |
-| **embedrs** | [rust-embeddings](https://github.com/goliajp/rust-embeddings) | Unified embedding -- cloud + local (this crate) |
-| [chunkedrs](https://crates.io/crates/chunkedrs) | [rust-chunker](https://github.com/goliajp/rust-chunker) | AI-native text chunking for embedding and retrieval |
+| **embedrs** (this crate) | [rust-embeddings](https://github.com/goliajp/rust-embeddings) | Unified embedding — cloud APIs + local inference, one interface |
+| [chunkedrs](https://crates.io/crates/chunkedrs) | [rust-chunker](https://github.com/goliajp/rust-chunker) | AI-native text chunking — recursive, markdown-aware, semantic |
+
+<!-- ECOSYSTEM END -->
 
 ## License
 
