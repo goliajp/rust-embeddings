@@ -315,7 +315,7 @@ match client.embed(vec!["hello".into()]).await {
 
 **fastembed-rs** 如果只需本地 ONNX Runtime 推理且不需要云端提供商，是不错的选择。**embedrs** 面向需要云端 + 本地统一 API 的场景，提供开箱即用的默认值和生产级特性（回退、退避等）。
 
-<!-- ECOSYSTEM BEGIN (synced by claws/opensource/scripts/sync-ecosystem.py — edit ecosystem.toml, not this block) -->
+<!-- ECOSYSTEM BEGIN (generated — edit ecosystem.toml, not this block) -->
 
 ## 生态系统
 
