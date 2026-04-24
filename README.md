@@ -315,7 +315,7 @@ match client.embed(vec!["hello".into()]).await {
 
 **fastembed-rs** is a solid choice if you only need local inference with ONNX Runtime and don't need cloud providers. **embedrs** is designed for applications that need both cloud and local through a single API, with opinionated defaults and production features like fallback and backoff.
 
-<!-- ECOSYSTEM BEGIN (synced by claws/opensource/scripts/sync-ecosystem.py — edit ecosystem.toml, not this block) -->
+<!-- ECOSYSTEM BEGIN (generated — edit ecosystem.toml, not this block) -->
 
 ## Ecosystem
 

@@ -315,7 +315,7 @@ match client.embed(vec!["hello".into()]).await {
 
 **fastembed-rs** はローカル ONNX Runtime 推論のみで十分な場合には優れた選択肢です。**embedrs** はクラウド + ローカルを単一 API で統合し、データに裏付けられたデフォルトとフォールバック・バックオフなどの本番向け機能を提供します。
 
-<!-- ECOSYSTEM BEGIN (synced by claws/opensource/scripts/sync-ecosystem.py — edit ecosystem.toml, not this block) -->
+<!-- ECOSYSTEM BEGIN (generated — edit ecosystem.toml, not this block) -->
 
 ## エコシステム
 
