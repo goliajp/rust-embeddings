@@ -1,12 +1,14 @@
 mod cohere;
 mod gemini;
 mod jina;
+mod mistral;
 mod openai;
 mod voyage;
 
 pub(crate) use cohere::send_cohere;
 pub(crate) use gemini::send_gemini;
 pub(crate) use jina::send_jina;
+pub(crate) use mistral::send_mistral;
 pub(crate) use openai::send_openai;
 pub(crate) use voyage::send_voyage;
 
@@ -66,6 +68,10 @@ pub(crate) enum ProviderKind {
         api_key: String,
         base_url: String,
     },
+    Mistral {
+        api_key: String,
+        base_url: String,
+    },
     #[cfg(feature = "local")]
     Local {
         model_def: &'static crate::local::ModelDefinition,
@@ -81,6 +87,7 @@ impl ProviderKind {
             Self::Gemini { .. } => "gemini-embedding-001",
             Self::Voyage { .. } => "voyage-3-large",
             Self::Jina { .. } => "jina-embeddings-v3",
+            Self::Mistral { .. } => "mistral-embed",
             #[cfg(feature = "local")]
             Self::Local { model_def, .. } => model_def.name,
         }
@@ -94,6 +101,7 @@ impl ProviderKind {
             Self::Gemini { .. } => 100,
             Self::Voyage { .. } => 128,
             Self::Jina { .. } => 2048,
+            Self::Mistral { .. } => 512,
             #[cfg(feature = "local")]
             Self::Local { .. } => 256,
         }
@@ -108,6 +116,7 @@ impl ProviderKind {
             Self::Gemini { .. } => "gemini",
             Self::Voyage { .. } => "voyage",
             Self::Jina { .. } => "jina",
+            Self::Mistral { .. } => "mistral",
             #[cfg(feature = "local")]
             Self::Local { .. } => "local",
         }
@@ -142,6 +151,9 @@ impl ProviderKind {
                     http, base_url, api_key, model, texts, dimensions, input_type,
                 )
                 .await
+            }
+            Self::Mistral { api_key, base_url } => {
+                send_mistral(http, base_url, api_key, model, texts).await
             }
             #[cfg(feature = "local")]
             Self::Local { model_def, engine } => {
@@ -214,6 +226,17 @@ mod tests {
             base_url: "url".into(),
         };
         assert_eq!(provider.default_model(), "jina-embeddings-v3");
+    }
+
+    #[test]
+    fn default_model_mistral() {
+        let provider = ProviderKind::Mistral {
+            api_key: "key".into(),
+            base_url: "url".into(),
+        };
+        assert_eq!(provider.default_model(), "mistral-embed");
+        assert_eq!(provider.max_batch_size(), 512);
+        assert_eq!(provider.kind_name(), "mistral");
     }
 
     #[test]
