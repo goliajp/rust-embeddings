@@ -77,11 +77,5 @@ async fn embed_mistral_api_error_429() {
 
     let client = embedrs::Client::mistral_compatible("mistral-key", &server.uri());
     let err = client.embed(vec!["hi".into()]).await.unwrap_err();
-    assert!(matches!(
-        err,
-        embedrs::Error::Api {
-            status: 429,
-            ..
-        }
-    ));
+    assert!(matches!(err, embedrs::Error::Api { status: 429, .. }));
 }
