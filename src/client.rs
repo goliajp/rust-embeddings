@@ -133,6 +133,22 @@ impl Client {
         })
     }
 
+    /// Create a client for Mistral embedding models (`mistral-embed`, `codestral-embed-2505`).
+    pub fn mistral(api_key: impl Into<String>) -> Self {
+        Self::new_with_provider(ProviderKind::Mistral {
+            api_key: api_key.into(),
+            base_url: "https://api.mistral.ai/v1".into(),
+        })
+    }
+
+    /// Create a client for any Mistral-compatible embedding API.
+    pub fn mistral_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self::new_with_provider(ProviderKind::Mistral {
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+        })
+    }
+
     /// Create a client for local model inference using candle.
     ///
     /// The model weights are downloaded from HuggingFace Hub on first use
