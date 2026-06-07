@@ -415,14 +415,16 @@ impl EmbedBuilder<'_> {
                 Err(Error::Api {
                     status,
                     ref message,
+                    retry_after,
                 }) if (status == 429 || status == 503) && http_attempt < max_http_retries => {
                     if let Some(ref backoff) = self.backoff {
-                        let delay = backoff.delay_for(http_attempt);
+                        let delay = retry_after.unwrap_or_else(|| backoff.delay_for(http_attempt));
                         #[cfg(feature = "tracing")]
                         tracing::warn!(
                             status,
                             attempt = http_attempt,
                             delay_ms = delay.as_millis() as u64,
+                            retry_after_header = retry_after.is_some(),
                             error = message.as_str(),
                             "retryable HTTP error, backing off"
                         );

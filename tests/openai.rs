@@ -116,7 +116,7 @@ async fn embed_openai_api_error() {
     let client = embedrs::Client::openai_compatible("test-key", &server.uri());
     let err = client.embed(vec!["test".into()]).await.unwrap_err();
     match err {
-        embedrs::Error::Api { status, message } => {
+        embedrs::Error::Api { status, message, .. } => {
             assert_eq!(status, 429);
             assert!(message.contains("rate limited"));
         }

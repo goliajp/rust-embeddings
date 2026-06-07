@@ -107,10 +107,12 @@ async fn send_single(
 
     let status = resp.status();
     if !status.is_success() {
+        let retry_after = super::parse_retry_after(resp.headers());
         let text = resp.text().await.unwrap_or_default();
         return Err(Error::Api {
             status: status.as_u16(),
             message: text,
+            retry_after,
         });
     }
 
@@ -160,10 +162,12 @@ async fn send_batch(
 
     let status = resp.status();
     if !status.is_success() {
+        let retry_after = super::parse_retry_after(resp.headers());
         let text = resp.text().await.unwrap_or_default();
         return Err(Error::Api {
             status: status.as_u16(),
             message: text,
+            retry_after,
         });
     }
 

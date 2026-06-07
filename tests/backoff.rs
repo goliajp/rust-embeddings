@@ -90,6 +90,64 @@ async fn timeout_interrupts_slow_request() {
     );
 }
 
+struct RetryAfterResponder {
+    call_count: Arc<AtomicU32>,
+}
+
+impl Respond for RetryAfterResponder {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+        if count == 0 {
+            ResponseTemplate::new(429)
+                .insert_header("Retry-After", "1")
+                .set_body_string("rate limited")
+        } else {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "object": "list",
+                "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]}],
+                "model": "text-embedding-3-small",
+                "usage": {"prompt_tokens": 5, "total_tokens": 5}
+            }))
+        }
+    }
+}
+
+#[tokio::test]
+async fn retry_after_header_overrides_backoff() {
+    let server = MockServer::start().await;
+    let call_count = Arc::new(AtomicU32::new(0));
+
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(RetryAfterResponder {
+            call_count: call_count.clone(),
+        })
+        .mount(&server)
+        .await;
+
+    let client = embedrs::Client::openai_compatible("test-key", &server.uri()).with_retry_backoff(
+        embedrs::BackoffConfig {
+            // base_delay tiny on purpose — if Retry-After is honored we wait ≥1s,
+            // if it's ignored we'd finish in <50ms.
+            base_delay: std::time::Duration::from_millis(10),
+            max_delay: std::time::Duration::from_millis(50),
+            jitter: false,
+            max_http_retries: 2,
+        },
+    );
+
+    let start = std::time::Instant::now();
+    let result = client.embed(vec!["test".into()]).await.unwrap();
+    let elapsed = start.elapsed();
+
+    assert_eq!(result.embeddings.len(), 1);
+    assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    assert!(
+        elapsed >= std::time::Duration::from_millis(900),
+        "Retry-After: 1 should yield ≥1s wait, got {elapsed:?}"
+    );
+}
+
 #[tokio::test]
 async fn no_backoff_fails_immediately() {
     let server = MockServer::start().await;

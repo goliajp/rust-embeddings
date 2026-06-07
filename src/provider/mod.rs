@@ -21,6 +21,16 @@ pub(crate) struct RawEmbedResponse {
     pub model: String,
 }
 
+/// Parse `Retry-After` (RFC 7231 §7.1.3) in its delta-seconds form.
+///
+/// HTTP-date form is not parsed; callers fall back to configured backoff
+/// when this returns `None`.
+pub(crate) fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    let secs: u64 = raw.trim().parse().ok()?;
+    Some(std::time::Duration::from_secs(secs))
+}
+
 /// The type of input being embedded, used by providers that support it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputType {
