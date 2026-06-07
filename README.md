@@ -115,6 +115,14 @@ embedrs = { version = "0.3", features = ["local", "tracing"] }
 | Jina AI | `Client::jina(key)` | `jina-embeddings-v3` | 2048 |
 | Local | `Client::local(name)?` | `all-MiniLM-L6-v2` | 256 |
 
+Model is free-form — pass any current id with `.embed(...).model("...")`. Notable models as of 2026-06:
+
+- **Voyage** — `voyage-3-large` (default), `voyage-4-large`, `voyage-4`, `voyage-4-lite`, `voyage-3.5`, `voyage-3.5-lite`, `voyage-code-3`
+- **OpenAI** — `text-embedding-3-small` (default), `text-embedding-3-large`
+- **Cohere** — `embed-v4.0` (default, multimodal)
+- **Gemini** — `gemini-embedding-001` (default)
+- **Jina** — `jina-embeddings-v3` (default)
+
 Each cloud provider also has a `*_compatible` constructor for proxies or API-compatible services:
 
 ```rust
