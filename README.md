@@ -120,7 +120,7 @@ Model is free-form — pass any current id with `.embed(...).model("...")`. Nota
 - **Voyage** — `voyage-3-large` (default), `voyage-4-large`, `voyage-4`, `voyage-4-lite`, `voyage-3.5`, `voyage-3.5-lite`, `voyage-code-3`
 - **OpenAI** — `text-embedding-3-small` (default), `text-embedding-3-large`
 - **Cohere** — `embed-v4.0` (default, multimodal)
-- **Gemini** — `gemini-embedding-001` (default)
+- **Gemini** — `gemini-embedding-001` (default), `gemini-embedding-2` (multimodal, supports `output_dimensionality`)
 - **Jina** — `jina-embeddings-v3` (default)
 
 Each cloud provider also has a `*_compatible` constructor for proxies or API-compatible services:
