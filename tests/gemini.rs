@@ -36,6 +36,25 @@ async fn embed_gemini_single() {
 }
 
 #[tokio::test]
+async fn embed_gemini_embedding_2_model_override() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path_regex(r".*models/gemini-embedding-2:embedContent.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(mock_gemini_single_response()))
+        .mount(&server)
+        .await;
+
+    let client = embedrs::Client::gemini_compatible("gemini-key", &server.uri());
+    let result = client
+        .embed(vec!["hello".into()])
+        .model("gemini-embedding-2")
+        .await
+        .unwrap();
+    assert_eq!(result.embeddings[0], vec![0.1, 0.2, 0.3]);
+}
+
+#[tokio::test]
 async fn embed_gemini_batch() {
     let server = MockServer::start().await;
 
