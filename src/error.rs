@@ -17,11 +17,16 @@ pub enum Error {
 
     /// Provider returned a non-2xx HTTP status with an error payload.
     #[error("api error ({status}): {message}")]
+    #[non_exhaustive]
     Api {
         /// HTTP status code returned by the provider.
         status: u16,
         /// Human-readable error message extracted from the response body.
         message: String,
+        /// Value of the `Retry-After` response header (delta-seconds form only),
+        /// if present. Used by the retry loop to respect the provider's hint
+        /// instead of the configured backoff.
+        retry_after: Option<Duration>,
     },
 
     /// Request did not complete within the configured timeout.
@@ -54,6 +59,7 @@ mod tests {
         let err = Error::Api {
             status: 429,
             message: "rate limited".into(),
+            retry_after: None,
         };
         let s = err.to_string();
         assert!(s.contains("429"));
@@ -108,6 +114,7 @@ mod tests {
         let err = Error::Api {
             status: 500,
             message: "internal".into(),
+            retry_after: None,
         };
         let debug = format!("{err:?}");
         assert!(debug.contains("Api"));
