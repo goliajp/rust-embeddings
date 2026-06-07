@@ -92,7 +92,7 @@ async fn embed_voyage_api_error_429() {
     let client = embedrs::Client::voyage_compatible("voyage-key", &server.uri());
     let err = client.embed(vec!["test".into()]).await.unwrap_err();
     match err {
-        embedrs::Error::Api { status, message } => {
+        embedrs::Error::Api { status, message, .. } => {
             assert_eq!(status, 429);
             assert!(message.contains("rate limited"));
         }
@@ -113,7 +113,7 @@ async fn embed_voyage_api_error_500() {
     let client = embedrs::Client::voyage_compatible("voyage-key", &server.uri());
     let err = client.embed(vec!["test".into()]).await.unwrap_err();
     match err {
-        embedrs::Error::Api { status, message } => {
+        embedrs::Error::Api { status, message, .. } => {
             assert_eq!(status, 500);
             assert!(message.contains("internal server error"));
         }
