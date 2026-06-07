@@ -1,3 +1,5 @@
+//! Batch builder — chunk large inputs and dispatch with bounded concurrency.
+
 use std::future::{Future, IntoFuture};
 use std::pin::Pin;
 use std::sync::Arc;
