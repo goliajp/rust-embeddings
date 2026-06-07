@@ -1,32 +1,48 @@
+//! Crate-wide error type and `Result` alias.
+
 use std::time::Duration;
 
 use thiserror::Error;
 
+/// All errors produced by embedrs.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Transport-level failure from the HTTP client (connect, TLS, decode, etc.).
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// Response body could not be parsed as JSON, or did not match the expected schema.
     #[error("json parse error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// Provider returned a non-2xx HTTP status with an error payload.
     #[error("api error ({status}): {message}")]
-    Api { status: u16, message: String },
+    Api {
+        /// HTTP status code returned by the provider.
+        status: u16,
+        /// Human-readable error message extracted from the response body.
+        message: String,
+    },
 
+    /// Request did not complete within the configured timeout.
     #[error("request timed out after {0:?}")]
     Timeout(Duration),
 
+    /// Caller submitted more texts in one call than the provider accepts.
     #[error("input too large: {0} texts exceeds provider maximum of {1}")]
     InputTooLarge(usize, usize),
 
+    /// Catch-all for errors that do not fit the categories above.
     #[error("{0}")]
     Other(String),
 
+    /// Local-inference model id is not in the bundled registry.
     #[cfg(feature = "local")]
     #[error("unknown local model: {0}")]
     UnknownModel(String),
 }
 
+/// Convenience alias: `Result<T, embedrs::Error>`.
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]

@@ -1,3 +1,5 @@
+//! Local on-device embedding inference (candle + bundled model registry).
+
 mod download;
 mod inference;
 mod model;

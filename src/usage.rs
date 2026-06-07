@@ -1,3 +1,5 @@
+//! Token usage and (optional) cost accounting for embedding requests.
+
 /// Token usage information from an embedding request.
 #[derive(Debug, Clone, Default)]
 pub struct Usage {
