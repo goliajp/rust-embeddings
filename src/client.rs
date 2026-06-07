@@ -213,6 +213,26 @@ impl Client {
         self
     }
 
+    /// Replace the underlying [`reqwest::Client`].
+    ///
+    /// Use this to share one connection pool across providers (saves
+    /// keep-alive sockets when a fallback chain spans multiple hosts),
+    /// or to inject custom TLS, proxies, headers, or transport timeouts.
+    ///
+    /// The replacement is propagated to every fallback **registered up
+    /// to this point**; call this after `with_fallback(...)` if you want
+    /// the share to cover them.
+    ///
+    /// The reqwest-level timeout still composes with [`Self::with_timeout`]:
+    /// the smaller of the two wins on any given request.
+    pub fn with_http_client(mut self, http: reqwest::Client) -> Self {
+        for fb in &mut self.fallbacks {
+            fb.http = http.clone();
+        }
+        self.http = http;
+        self
+    }
+
     /// Begin an embedding request for one or more texts.
     ///
     /// ```rust,no_run
