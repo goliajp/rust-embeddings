@@ -49,7 +49,7 @@ embedrs = { version = "0.3", features = ["local"] }
 
 | Feature | Default | Description |
 |---|---|---|
-| *(none)* | yes | Core embedding client, all 5 cloud providers |
+| *(none)* | yes | Core embedding client, all 6 cloud providers |
 | `local` | no | Local inference via candle (all-MiniLM-L6-v2, 23MB) |
 | `cost-tracking` | no | Estimated cost per request via `tiktoken` pricing data |
 | `tracing` | no | Structured logging via the `tracing` crate |
@@ -113,6 +113,7 @@ embedrs = { version = "0.3", features = ["local", "tracing"] }
 | Google Gemini | `Client::gemini(key)` | `gemini-embedding-001` | 100 |
 | Voyage AI | `Client::voyage(key)` | `voyage-3-large` | 128 |
 | Jina AI | `Client::jina(key)` | `jina-embeddings-v3` | 2048 |
+| Mistral | `Client::mistral(key)` | `mistral-embed` | 512 |
 | Local | `Client::local(name)?` | `all-MiniLM-L6-v2` | 256 |
 
 Model is free-form — pass any current id with `.embed(...).model("...")`. Notable models as of 2026-06:
@@ -122,6 +123,7 @@ Model is free-form — pass any current id with `.embed(...).model("...")`. Nota
 - **Cohere** — `embed-v4.0` (default, multimodal)
 - **Gemini** — `gemini-embedding-001` (default), `gemini-embedding-2` (multimodal, supports `output_dimensionality`)
 - **Jina** — `jina-embeddings-v3` (default). `jina-embeddings-v4` is released but its cloud-API response schema isn't yet verified single-vector compatible with this crate — try it via `.model("jina-embeddings-v4")` and please file an issue if you hit a deserialization error.
+- **Mistral** — `mistral-embed` (default), `codestral-embed-2505` (specialized for code)
 
 Each cloud provider also has a `*_compatible` constructor for proxies or API-compatible services:
 
@@ -137,6 +139,9 @@ let client = Client::gemini_compatible("key", "https://proxy.example.com/v1beta"
 
 // Voyage-compatible
 let client = Client::voyage_compatible("key", "https://proxy.example.com/v1");
+
+// Mistral-compatible
+let client = Client::mistral_compatible("key", "https://proxy.example.com/v1");
 
 // Jina-compatible
 let client = Client::jina_compatible("key", "https://proxy.example.com/v1");
@@ -313,7 +318,7 @@ match client.embed(vec!["hello".into()]).await {
 
 | Aspect | embedrs | fastembed-rs | Raw reqwest |
 |---|---|---|---|
-| Cloud providers | 5 built-in (OpenAI, Cohere, Gemini, Voyage, Jina) | None | Manual per provider |
+| Cloud providers | 6 built-in (OpenAI, Cohere, Gemini, Voyage, Jina, Mistral) | None | Manual per provider |
 | Local inference | candle-based, 23MB default model | ONNX Runtime, multiple models | N/A |
 | Unified interface | Same `EmbedResult` for cloud and local | Local only | N/A |
 | Batch auto-chunking | Automatic by provider limits + concurrency | Manual | Manual |
