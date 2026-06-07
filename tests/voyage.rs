@@ -33,6 +33,34 @@ async fn embed_voyage_basic() {
 }
 
 #[tokio::test]
+async fn embed_voyage_v4_large_model_override() {
+    let server = MockServer::start().await;
+
+    let response = serde_json::json!({
+        "object": "list",
+        "data": [{"object": "embedding", "index": 0, "embedding": [0.4, 0.5, 0.6]}],
+        "model": "voyage-4-large",
+        "usage": {"total_tokens": 7}
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response))
+        .mount(&server)
+        .await;
+
+    let client = embedrs::Client::voyage_compatible("voyage-key", &server.uri());
+    let result = client
+        .embed(vec!["hello".into()])
+        .model("voyage-4-large")
+        .await
+        .unwrap();
+
+    assert_eq!(result.model, "voyage-4-large");
+    assert_eq!(result.embeddings[0], vec![0.4, 0.5, 0.6]);
+}
+
+#[tokio::test]
 async fn embed_voyage_with_input_type() {
     let server = MockServer::start().await;
 
