@@ -38,6 +38,28 @@ async fn embed_openai_basic() {
 }
 
 #[tokio::test]
+async fn with_http_client_replaces_underlying_client() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .and(header("user-agent", "embedrs-custom-test/1.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(mock_openai_response()))
+        .mount(&server)
+        .await;
+
+    let custom_http = reqwest::Client::builder()
+        .user_agent("embedrs-custom-test/1.0")
+        .build()
+        .unwrap();
+
+    let client = embedrs::Client::openai_compatible("test-key", &server.uri())
+        .with_http_client(custom_http);
+    let result = client.embed(vec!["hi".into()]).await.unwrap();
+    assert_eq!(result.embeddings.len(), 2);
+}
+
+#[tokio::test]
 async fn embed_openai_with_dimensions() {
     let server = MockServer::start().await;
 
