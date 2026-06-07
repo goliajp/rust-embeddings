@@ -121,7 +121,7 @@ Model is free-form — pass any current id with `.embed(...).model("...")`. Nota
 - **OpenAI** — `text-embedding-3-small` (default), `text-embedding-3-large`
 - **Cohere** — `embed-v4.0` (default, multimodal)
 - **Gemini** — `gemini-embedding-001` (default), `gemini-embedding-2` (multimodal, supports `output_dimensionality`)
-- **Jina** — `jina-embeddings-v3` (default)
+- **Jina** — `jina-embeddings-v3` (default). `jina-embeddings-v4` is released but its cloud-API response schema isn't yet verified single-vector compatible with this crate — try it via `.model("jina-embeddings-v4")` and please file an issue if you hit a deserialization error.
 
 Each cloud provider also has a `*_compatible` constructor for proxies or API-compatible services:
 
