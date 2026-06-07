@@ -27,7 +27,9 @@ pub(crate) struct RawEmbedResponse {
 ///
 /// HTTP-date form is not parsed; callers fall back to configured backoff
 /// when this returns `None`.
-pub(crate) fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+pub(crate) fn parse_retry_after(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<std::time::Duration> {
     let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
     let secs: u64 = raw.trim().parse().ok()?;
     Some(std::time::Duration::from_secs(secs))
