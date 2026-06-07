@@ -1,3 +1,5 @@
+//! Vector similarity primitives (cosine, dot product, Euclidean distance).
+
 /// Compute cosine similarity between two vectors.
 ///
 /// Returns a value in `[-1.0, 1.0]`. Returns `0.0` if either vector has zero magnitude.

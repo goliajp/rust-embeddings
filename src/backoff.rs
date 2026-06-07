@@ -1,3 +1,5 @@
+//! Exponential backoff policy with jitter for retryable HTTP failures.
+
 use std::time::Duration;
 
 /// Configuration for exponential backoff on retryable HTTP errors (429, 503).
