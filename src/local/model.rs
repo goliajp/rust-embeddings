@@ -5,7 +5,7 @@ use candle_transformers::models::bert::{Config as BertConfig, HiddenAct, Positio
 pub enum PoolingStrategy {
     /// Average all token embeddings weighted by the attention mask.
     MeanPooling,
-    /// Use the [CLS] token embedding.
+    /// Use the `[CLS]` token embedding.
     #[allow(dead_code)]
     ClsToken,
 }

@@ -1,3 +1,5 @@
+//! Unified [`Client`] facade over cloud providers and local inference.
+
 use std::future::{Future, IntoFuture};
 use std::pin::Pin;
 use std::time::Duration;
