@@ -5,6 +5,24 @@ All notable changes to this crate will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`tiktoken` floor raised to 4.1.1.** 4.1 resolves model ids the way the
+  provider APIs spell them, so a caller passing the id it just sent to the API
+  gets a cost instead of `None`. 4.1.1 adds the embedding models two of this
+  crate's defaults name: `gemini-embedding-001` and the Voyage family
+  (`voyage-3-large` is the Voyage default). Both priced at nothing before.
+
+### Known gaps
+
+- Cost tracking still reports nothing for Cohere, Jina and Mistral embeddings.
+  The upstream price table carries no entries for them because their per-token
+  rates are not published on a vendor page — a guessed rate would bill someone
+  wrongly and silently. `tests/cost_tracking.rs` records where the line falls
+  so it moves deliberately.
+
 ## [0.5.0] - 2026-08-13
 
 ### Changed
