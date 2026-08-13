@@ -28,6 +28,23 @@ jobs:
       - run: cargo test --workspace --all-targets
       - run: cargo test --workspace --doc
 
+  optional-features:
+    name: optional features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `cost-tracking` is not a default feature, so the `test` job above never
+      # compiled tests/cost_tracking.rs at all — the whole file is behind
+      # `#![cfg(feature = "cost-tracking")]`. It also holds the assertion that
+      # no tokenizer vocabulary is compiled in, which is the kind of thing that
+      # regresses silently.
+      - run: cargo test --features cost-tracking
+      - run: cargo test --features tracing
+      - run: cargo test --features cost-tracking,tracing
+      - run: cargo clippy --lib --features cost-tracking,tracing -- -D warnings
+
   lint:
     name: fmt + clippy (lib strict)
     runs-on: ubuntu-latest

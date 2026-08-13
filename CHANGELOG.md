@@ -5,6 +5,48 @@ All notable changes to this crate will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-08-13
+
+### Changed
+
+- **`tiktoken` floor `"3.5"` → `"4"`, with `default-features = false`.**
+
+  The immediate reason is ecosystem coherence: `chunkedrs` 2.0 requires
+  `tiktoken` 4, so a project using both and enabling `cost-tracking` would
+  otherwise compile two majors of it.
+
+  The better reason is that `default-features = false` is now the honest
+  declaration. This crate uses exactly one thing from `tiktoken` — the pricing
+  tables — and never encodes, counts, or constructs an encoding. Before 4.0
+  there was no way to say that, so `cost-tracking` dragged in every tokenizer
+  vocabulary. `tiktoken`'s rlib drops from 29.7 MB to 2.8 MB (−91%).
+
+  **Final binaries are unchanged.** Measured both ways on a release build and
+  on a debug build: identical to within 16 bytes. The linker was already
+  dropping data that nothing referenced, so the win here is in build artifacts
+  and caches, not in what ships. Compile time was measured too and the
+  difference did not clear single-run noise, so no claim is made about it.
+
+  `tests/cost_tracking.rs::cost_tracking_carries_no_tokenizer_vocabulary`
+  asserts `list_encodings()` is empty, so the declaration cannot drift back
+  from what the code actually uses.
+
+  No token ids, pricing values, or public API changed. `estimate_cost` returns
+  what it returned before.
+
+- **`cost-tracking = ["tiktoken"]` → `["dep:tiktoken"]`.** The old spelling
+  also created an implicit `tiktoken` feature; enabling it on its own compiled
+  the dependency while every `#[cfg(feature = "cost-tracking")]` site stayed
+  switched off, which did nothing but cost build time. `cost-tracking` remains
+  the documented and only way to turn this on.
+
+### Docs
+
+- The install snippets in all three READMEs still said `embedrs = "0.3"` two
+  releases after 0.4.0 shipped. Updated.
+- The MSRV badge still read 1.94 after 0.4.0 removed the `rust-version` pin.
+  Removed.
+
 ## [0.4.0] - 2026-06-07
 
 ### Added
