@@ -95,3 +95,34 @@ fn pricing_works_without_vocabularies() {
         "an unknown model has no pricing"
     );
 }
+
+/// Which of the cloud defaults can actually be costed.
+///
+/// `cost` is `Option`, so a provider the price table does not carry reports
+/// nothing and explains nothing — the number simply never appears. This test
+/// records where that line currently falls, so it moves deliberately: the
+/// table gained `gemini-embedding-001` in tiktoken 4.1 and the Voyage family in
+/// 4.1.1. Cohere, Jina and Mistral embeddings are still absent upstream —
+/// their per-token rates are not published on a vendor page, and a guessed
+/// rate bills someone wrongly and silently.
+#[test]
+fn default_models_that_the_price_table_carries() {
+    for id in [
+        "text-embedding-3-small",
+        "gemini-embedding-001",
+        "voyage-3-large",
+        "voyage-4-large",
+    ] {
+        assert!(
+            tiktoken::pricing::estimate_cost(id, 1_000_000, 0).is_some_and(|c| c > 0.0),
+            "{id} must be priced"
+        );
+    }
+
+    for id in ["embed-v4.0", "jina-embeddings-v3", "mistral-embed"] {
+        assert!(
+            tiktoken::pricing::estimate_cost(id, 1_000_000, 0).is_none(),
+            "{id} is now priced upstream — drop it from this list and say so in the changelog"
+        );
+    }
+}

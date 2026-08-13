@@ -110,18 +110,18 @@ embedrs = { version = "0.5", features = ["local", "tracing"] }
 | OpenAI | `Client::openai(key)` | `text-embedding-3-small` | 2048 |
 | Cohere | `Client::cohere(key)` | `embed-v4.0` | 96 |
 | Google Gemini | `Client::gemini(key)` | `gemini-embedding-001` | 100 |
-| Voyage AI | `Client::voyage(key)` | `voyage-3-large` | 128 |
+| Voyage AI | `Client::voyage(key)` | `voyage-4-large` | 128 |
 | Jina AI | `Client::jina(key)` | `jina-embeddings-v3` | 2048 |
 | Mistral | `Client::mistral(key)` | `mistral-embed` | 512 |
 | Local | `Client::local(name)?` | `all-MiniLM-L6-v2` | 256 |
 
-Model is free-form — pass any current id with `.embed(...).model("...")`. Notable models as of 2026-06:
+Model is free-form — pass any current id with `.embed(...).model("...")`. Notable models as of 2026-08:
 
-- **Voyage** — `voyage-3-large` (default), `voyage-4-large`, `voyage-4`, `voyage-4-lite`, `voyage-3.5`, `voyage-3.5-lite`, `voyage-code-3`
+- **Voyage** — `voyage-4-large` (default), `voyage-4`, `voyage-4-lite`, `voyage-code-4`, `voyage-3-large`, `voyage-3.5`, `voyage-3.5-lite`, `voyage-code-3`
 - **OpenAI** — `text-embedding-3-small` (default), `text-embedding-3-large`
 - **Cohere** — `embed-v4.0` (default, multimodal)
 - **Gemini** — `gemini-embedding-001` (default), `gemini-embedding-2` (multimodal, supports `output_dimensionality`)
-- **Jina** — `jina-embeddings-v3` (default). `jina-embeddings-v4` is released but its cloud-API response schema isn't yet verified single-vector compatible with this crate — try it via `.model("jina-embeddings-v4")` and please file an issue if you hit a deserialization error.
+- **Jina** — `jina-embeddings-v3` (default). `jina-embeddings-v4` and the `jina-embeddings-v5-text-*` models are released, but neither their cloud-API response schema nor the task-adapter names they accept have been verified against this crate — v5 documents four adapters where v3 takes `separation` for clustering, so `.input_type()` may not map cleanly. Try them via `.model("...")` and please file an issue if you hit a deserialization or task error.
 - **Mistral** — `mistral-embed` (default), `codestral-embed-2505` (specialized for code)
 
 Each cloud provider also has a `*_compatible` constructor for proxies or API-compatible services:
