@@ -150,7 +150,7 @@ async fn main() -> embedrs::Result<()> {
             v.push(("cohere", "COHERE: embed-v4.0 (1024-dim)", Some(k)));
         }
         if let Some(k) = voyage_key.as_deref() {
-            v.push(("voyage", "VOYAGE: voyage-3-large (1024-dim)", Some(k)));
+            v.push(("voyage", "VOYAGE: voyage-4-large (1024-dim)", Some(k)));
         }
         v
     };
@@ -183,7 +183,7 @@ async fn main() -> embedrs::Result<()> {
     println!("  openai:  $0.02 / 1M tokens (text-embedding-3-small)");
     println!("  gemini:  free tier 1500 RPM, then usage-based");
     println!("  cohere:  $0.10 / 1M tokens (embed-v4.0)");
-    println!("  voyage:  $0.06 / 1M tokens (voyage-3-large)\n");
+    println!("  voyage:  $0.12 / 1M tokens (voyage-4-large)\n");
 
     Ok(())
 }
