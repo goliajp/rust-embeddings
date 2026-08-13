@@ -110,7 +110,7 @@ embedrs = { version = "0.5", features = ["local", "tracing"] }
 | OpenAI | `Client::openai(key)` | `text-embedding-3-small` | 2048 |
 | Cohere | `Client::cohere(key)` | `embed-v4.0` | 96 |
 | Google Gemini | `Client::gemini(key)` | `gemini-embedding-001` | 100 |
-| Voyage AI | `Client::voyage(key)` | `voyage-3-large` | 128 |
+| Voyage AI | `Client::voyage(key)` | `voyage-4-large` | 128 |
 | Jina AI | `Client::jina(key)` | `jina-embeddings-v3` | 2048 |
 | 本地 | `Client::local(name)?` | `all-MiniLM-L6-v2` | 256 |
 
