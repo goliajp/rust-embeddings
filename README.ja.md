@@ -38,7 +38,7 @@ let result = client.embed(vec!["hello world".into()]).await?;
 
 ```toml
 [dependencies]
-embedrs = "0.5"
+embedrs = "0.6"
 
 # ローカル推論を有効化（初回使用時に約 23MB のモデルをダウンロード）
 embedrs = { version = "0.5", features = ["local"] }
@@ -56,7 +56,7 @@ embedrs = { version = "0.5", features = ["local"] }
 ```toml
 [dependencies]
 # クラウドのみ
-embedrs = "0.5"
+embedrs = "0.6"
 
 # クラウド + ローカル推論
 embedrs = { version = "0.5", features = ["local"] }
