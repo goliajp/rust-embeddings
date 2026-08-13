@@ -5,6 +5,53 @@ All notable changes to this crate will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-08-13
+
+### Changed — breaking
+
+- **The Voyage default moves from `voyage-3-large` to `voyage-4-large`.** The
+  4 generation supersedes it and costs less ($0.12 vs $0.18 per 1M tokens).
+
+  Both default to 1024 dimensions, so this does not change your vector width —
+  but embeddings from different models are not interchangeable. Vectors already
+  in an index were produced by `voyage-3-large`, and querying them with
+  `voyage-4-large` embeddings compares points from two different spaces. Either
+  re-embed the corpus, or pin the old model:
+
+  ```rust
+  let client = Client::voyage(key).with_model("voyage-3-large");
+  ```
+
+  Other providers' defaults are unchanged. Jina stays on v3 deliberately: v4
+  and the v5 text models are released, but their response schema and
+  task-adapter names are unverified against this crate (v5 documents four
+  adapters where v3 takes `separation`), and defaulting to a model whose
+  `.input_type()` mapping may be wrong is worse than staying a generation
+  behind.
+
+### Fixed
+
+- The cost summary in `examples/benchmark.rs` quoted $0.06 / 1M tokens for
+  `voyage-3-large`. The rate is $0.18; the example now names `voyage-4-large`
+  at its actual $0.12.
+
+
+### Changed
+
+- **`tiktoken` floor raised to 4.1.1.** 4.1 resolves model ids the way the
+  provider APIs spell them, so a caller passing the id it just sent to the API
+  gets a cost instead of `None`. 4.1.1 adds the embedding models two of this
+  crate's defaults name: `gemini-embedding-001` and the Voyage family
+  (`voyage-3-large` is the Voyage default). Both priced at nothing before.
+
+### Known gaps
+
+- Cost tracking still reports nothing for Cohere, Jina and Mistral embeddings.
+  The upstream price table carries no entries for them because their per-token
+  rates are not published on a vendor page — a guessed rate would bill someone
+  wrongly and silently. `tests/cost_tracking.rs` records where the line falls
+  so it moves deliberately.
+
 ## [0.5.0] - 2026-08-13
 
 ### Changed
