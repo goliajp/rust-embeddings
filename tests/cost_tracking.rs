@@ -60,3 +60,38 @@ async fn cost_none_for_unknown_model() {
         "cost should be None for an unknown model"
     );
 }
+
+/// `cost-tracking` uses exactly one thing from tiktoken: the pricing tables.
+/// It never encodes, counts, or constructs an encoding — so it should carry no
+/// tokenizer vocabulary at all.
+///
+/// Since tiktoken 4 that is expressible, and this test is what keeps it true.
+/// If someone later reaches for `tiktoken::get_encoding` here, or a vocabulary
+/// feature gets switched on by a transitive dependency, this fails and says so
+/// — rather than several megabytes quietly reappearing in every downstream
+/// binary that enables cost tracking.
+#[test]
+fn cost_tracking_carries_no_tokenizer_vocabulary() {
+    assert!(
+        tiktoken::list_encodings().is_empty(),
+        "embedrs needs pricing data only, but this build compiled in {:?}",
+        tiktoken::list_encodings(),
+    );
+    assert!(
+        tiktoken::get_encoding("o200k_base").is_none(),
+        "no vocabulary should be constructible from an embedrs build"
+    );
+}
+
+/// The pricing tables stand on their own without any vocabulary behind them.
+#[test]
+fn pricing_works_without_vocabularies() {
+    let cost = tiktoken::pricing::estimate_cost("text-embedding-3-small", 1_000_000, 0)
+        .expect("text-embedding-3-small must have pricing data");
+    assert!(cost > 0.0, "cost should be positive, got {cost}");
+
+    assert!(
+        tiktoken::pricing::estimate_cost("not-a-real-model-xyz", 1000, 0).is_none(),
+        "an unknown model has no pricing"
+    );
+}

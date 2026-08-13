@@ -64,7 +64,7 @@
 //! The `Usage::cost` field will be `Some(f64)` for models with pricing info, `None` otherwise.
 //!
 //! ```toml
-//! embedrs = { version = "0.2", features = ["cost-tracking"] }
+//! embedrs = { version = "0.5", features = ["cost-tracking"] }
 //! ```
 //!
 //! ## Error handling
