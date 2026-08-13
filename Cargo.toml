@@ -26,7 +26,12 @@ tracing = { version = "0.1", optional = true }
 # encoding. tiktoken 4 made the vocabularies optional, so `cost-tracking` no
 # longer drags several megabytes of tokenizer data in behind it.
 # tests/cost_tracking.rs asserts that no vocabulary is compiled in.
-tiktoken = { version = "4", optional = true, default-features = false }
+#
+# 4.1.1 is a floor, not a preference: 4.1 resolves model ids the way the
+# provider APIs spell them, and 4.1.1 carries the embedding models two of this
+# crate's defaults name — `gemini-embedding-001` and the Voyage family. Below
+# it, those defaults cost nothing and say nothing about why.
+tiktoken = { version = "4.1.1", optional = true, default-features = false }
 candle-core = { version = "0.10", optional = true }
 candle-nn = { version = "0.10", optional = true }
 candle-transformers = { version = "0.10", optional = true }
