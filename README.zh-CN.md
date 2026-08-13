@@ -4,7 +4,6 @@
 [![docs.rs](https://img.shields.io/docsrs/embedrs?style=flat-square&logo=docs.rs)](https://docs.rs/embedrs)
 [![License](https://img.shields.io/crates/l/embedrs?style=flat-square)](LICENSE)
 [![Downloads](https://img.shields.io/crates/d/embedrs?style=flat-square)](https://crates.io/crates/embedrs)
-[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue?style=flat-square)](https://www.rust-lang.org)
 
 [English](README.md) | **简体中文** | [日本語](README.ja.md)
 
@@ -39,10 +38,10 @@ let result = client.embed(vec!["hello world".into()]).await?;
 
 ```toml
 [dependencies]
-embedrs = "0.3"
+embedrs = "0.5"
 
 # 启用本地推理（首次使用下载约 23MB 模型）
-embedrs = { version = "0.3", features = ["local"] }
+embedrs = { version = "0.5", features = ["local"] }
 ```
 
 ## Feature Flags
@@ -51,22 +50,22 @@ embedrs = { version = "0.3", features = ["local"] }
 |---|---|---|
 | *(none)* | 是 | 核心功能，5 个云端提供商 |
 | `local` | 否 | 本地推理，基于 candle（all-MiniLM-L6-v2，23MB） |
-| `cost-tracking` | 否 | 通过 `tiktoken` 定价数据估算每次请求的费用 |
+| `cost-tracking` | 否 | 通过 `tiktoken` 定价数据估算每次请求的费用 —— 只用定价表，不含分词器词表 |
 | `tracing` | 否 | 通过 `tracing` crate 输出结构化日志 |
 
 ```toml
 [dependencies]
 # 仅云端
-embedrs = "0.3"
+embedrs = "0.5"
 
 # 云端 + 本地推理
-embedrs = { version = "0.3", features = ["local"] }
+embedrs = { version = "0.5", features = ["local"] }
 
 # 启用费用追踪
-embedrs = { version = "0.3", features = ["cost-tracking"] }
+embedrs = { version = "0.5", features = ["cost-tracking"] }
 
 # 启用 tracing
-embedrs = { version = "0.3", features = ["local", "tracing"] }
+embedrs = { version = "0.5", features = ["local", "tracing"] }
 ```
 
 ## 基准测试结果
@@ -270,7 +269,7 @@ let client = embedrs::Client::openai("sk-...")
 启用 `cost-tracking` feature 可获取每次请求的费用估算：
 
 ```toml
-embedrs = { version = "0.3", features = ["cost-tracking"] }
+embedrs = { version = "0.5", features = ["cost-tracking"] }
 ```
 
 ```rust
@@ -281,6 +280,11 @@ if let Some(cost) = result.usage.cost {
 ```
 
 费用估算基于 `tiktoken` 定价数据。无定价信息的模型返回 `None`。
+
+这里只用到 `tiktoken` 的一样东西 —— 定价表 —— 因此依赖声明带
+`default-features = false`，不编入任何分词器词表。`tiktoken` 的 rlib 从
+29.7 MB 降到 2.8 MB。最终二进制两种情况下一致：链接器本来就会丢掉没有被引用的
+数据。有一个测试钉住「词表不许溜进来」，让依赖声明始终与代码的实际用量相符。
 
 ## 错误处理
 

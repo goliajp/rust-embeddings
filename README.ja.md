@@ -4,7 +4,6 @@
 [![docs.rs](https://img.shields.io/docsrs/embedrs?style=flat-square&logo=docs.rs)](https://docs.rs/embedrs)
 [![License](https://img.shields.io/crates/l/embedrs?style=flat-square)](LICENSE)
 [![Downloads](https://img.shields.io/crates/d/embedrs?style=flat-square)](https://crates.io/crates/embedrs)
-[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue?style=flat-square)](https://www.rust-lang.org)
 
 [English](README.md) | [简体中文](README.zh-CN.md) | **日本語**
 
@@ -39,10 +38,10 @@ let result = client.embed(vec!["hello world".into()]).await?;
 
 ```toml
 [dependencies]
-embedrs = "0.3"
+embedrs = "0.5"
 
 # ローカル推論を有効化（初回使用時に約 23MB のモデルをダウンロード）
-embedrs = { version = "0.3", features = ["local"] }
+embedrs = { version = "0.5", features = ["local"] }
 ```
 
 ## Feature フラグ
@@ -51,22 +50,22 @@ embedrs = { version = "0.3", features = ["local"] }
 |---|---|---|
 | *(なし)* | 有効 | コア機能、5 クラウドプロバイダー |
 | `local` | 無効 | candle によるローカル推論（all-MiniLM-L6-v2、23MB） |
-| `cost-tracking` | 無効 | `tiktoken` の価格データによるリクエストごとのコスト推定 |
+| `cost-tracking` | 無効 | `tiktoken` の価格データによるリクエストごとのコスト推定 — 価格テーブルのみ、語彙は含まない |
 | `tracing` | 無効 | `tracing` クレートによる構造化ログ |
 
 ```toml
 [dependencies]
 # クラウドのみ
-embedrs = "0.3"
+embedrs = "0.5"
 
 # クラウド + ローカル推論
-embedrs = { version = "0.3", features = ["local"] }
+embedrs = { version = "0.5", features = ["local"] }
 
 # コスト追跡付き
-embedrs = { version = "0.3", features = ["cost-tracking"] }
+embedrs = { version = "0.5", features = ["cost-tracking"] }
 
 # tracing 付き
-embedrs = { version = "0.3", features = ["local", "tracing"] }
+embedrs = { version = "0.5", features = ["local", "tracing"] }
 ```
 
 ## ベンチマーク結果
@@ -270,7 +269,7 @@ let client = embedrs::Client::openai("sk-...")
 `cost-tracking` フィーチャーを有効にすると、リクエストごとの推定コストを取得可能:
 
 ```toml
-embedrs = { version = "0.3", features = ["cost-tracking"] }
+embedrs = { version = "0.5", features = ["cost-tracking"] }
 ```
 
 ```rust
@@ -281,6 +280,8 @@ if let Some(cost) = result.usage.cost {
 ```
 
 コスト推定は `tiktoken` の価格データに基づきます。価格情報のないモデルは `None` を返します。
+
+ここで `tiktoken` から使うのは価格テーブルひとつだけなので、依存宣言は `default-features = false` を指定し、トークナイザーの語彙はひとつもコンパイルしません。`tiktoken` の rlib は 29.7 MB から 2.8 MB になります。最終バイナリはどちらでも同じです — 参照されていないデータはリンカが既に落としていました。語彙が紛れ込まないことをテストで固定しているので、依存宣言はコードの実際の使用と一致し続けます。
 
 ## エラーハンドリング
 
