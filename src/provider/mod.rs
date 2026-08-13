@@ -87,7 +87,7 @@ impl ProviderKind {
             Self::OpenAi { .. } => "text-embedding-3-small",
             Self::Cohere { .. } => "embed-v4.0",
             Self::Gemini { .. } => "gemini-embedding-001",
-            Self::Voyage { .. } => "voyage-3-large",
+            Self::Voyage { .. } => "voyage-4-large",
             Self::Jina { .. } => "jina-embeddings-v3",
             Self::Mistral { .. } => "mistral-embed",
             #[cfg(feature = "local")]
@@ -218,7 +218,7 @@ mod tests {
             api_key: "key".into(),
             base_url: "url".into(),
         };
-        assert_eq!(provider.default_model(), "voyage-3-large");
+        assert_eq!(provider.default_model(), "voyage-4-large");
     }
 
     #[test]
