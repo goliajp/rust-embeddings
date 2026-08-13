@@ -1,6 +1,6 @@
 [package]
 name = "embedrs"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 description = "Unified embedding — cloud APIs (OpenAI, Cohere, Gemini, Voyage, Jina, Mistral) + local inference, one interface"
 license = "MIT"
