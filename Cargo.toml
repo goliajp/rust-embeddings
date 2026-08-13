@@ -1,6 +1,6 @@
 [package]
 name = "embedrs"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "Unified embedding — cloud APIs (OpenAI, Cohere, Gemini, Voyage, Jina, Mistral) + local inference, one interface"
 license = "MIT"
@@ -22,7 +22,11 @@ thiserror = "2"
 rand = "0.10"
 futures = "0.3"
 tracing = { version = "0.1", optional = true }
-tiktoken = { version = "3.5", optional = true }
+# Pricing tables only — this crate never encodes, counts, or constructs an
+# encoding. tiktoken 4 made the vocabularies optional, so `cost-tracking` no
+# longer drags several megabytes of tokenizer data in behind it.
+# tests/cost_tracking.rs asserts that no vocabulary is compiled in.
+tiktoken = { version = "4", optional = true, default-features = false }
 candle-core = { version = "0.10", optional = true }
 candle-nn = { version = "0.10", optional = true }
 candle-transformers = { version = "0.10", optional = true }
@@ -33,7 +37,7 @@ ruzstd = { version = "0.8", optional = true }
 [features]
 default = []
 tracing = ["dep:tracing"]
-cost-tracking = ["tiktoken"]
+cost-tracking = ["dep:tiktoken"]
 local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:hf-hub", "dep:ruzstd"]
 
 [[example]]

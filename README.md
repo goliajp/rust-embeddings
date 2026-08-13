@@ -4,7 +4,6 @@
 [![docs.rs](https://img.shields.io/docsrs/embedrs?style=flat-square&logo=docs.rs)](https://docs.rs/embedrs)
 [![License](https://img.shields.io/crates/l/embedrs?style=flat-square)](LICENSE)
 [![Downloads](https://img.shields.io/crates/d/embedrs?style=flat-square)](https://crates.io/crates/embedrs)
-[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue?style=flat-square)](https://www.rust-lang.org)
 
 **English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
@@ -39,10 +38,10 @@ let result = client.embed(vec!["hello world".into()]).await?;
 
 ```toml
 [dependencies]
-embedrs = "0.3"
+embedrs = "0.5"
 
 # enable local inference (adds ~23MB model download on first use)
-embedrs = { version = "0.3", features = ["local"] }
+embedrs = { version = "0.5", features = ["local"] }
 ```
 
 ## Feature Flags
@@ -51,22 +50,22 @@ embedrs = { version = "0.3", features = ["local"] }
 |---|---|---|
 | *(none)* | yes | Core embedding client, all 6 cloud providers |
 | `local` | no | Local inference via candle (all-MiniLM-L6-v2, 23MB) |
-| `cost-tracking` | no | Estimated cost per request via `tiktoken` pricing data |
+| `cost-tracking` | no | Estimated cost per request via `tiktoken` pricing data — pricing tables only, no tokenizer vocabularies |
 | `tracing` | no | Structured logging via the `tracing` crate |
 
 ```toml
 [dependencies]
 # cloud only
-embedrs = "0.3"
+embedrs = "0.5"
 
 # cloud + local inference
-embedrs = { version = "0.3", features = ["local"] }
+embedrs = { version = "0.5", features = ["local"] }
 
 # with cost tracking
-embedrs = { version = "0.3", features = ["cost-tracking"] }
+embedrs = { version = "0.5", features = ["cost-tracking"] }
 
 # with tracing
-embedrs = { version = "0.3", features = ["local", "tracing"] }
+embedrs = { version = "0.5", features = ["local", "tracing"] }
 ```
 
 ## Benchmark Results
@@ -283,7 +282,7 @@ let client = embedrs::Client::openai("sk-...")
 Enable the `cost-tracking` feature to get estimated cost per request:
 
 ```toml
-embedrs = { version = "0.3", features = ["cost-tracking"] }
+embedrs = { version = "0.5", features = ["cost-tracking"] }
 ```
 
 ```rust
@@ -292,6 +291,13 @@ if let Some(cost) = result.usage.cost {
     println!("estimated cost: ${cost:.6}");
 }
 ```
+
+This uses exactly one thing from `tiktoken` — the pricing tables — and depends
+on it with `default-features = false`, so no tokenizer vocabulary is compiled
+in. The `tiktoken` rlib drops from 29.7 MB to 2.8 MB. Final binaries are
+unchanged either way: the linker was already dropping data nothing referenced.
+A test asserts the vocabularies stay out, so the dependency keeps matching what
+the code actually uses.
 
 Cost estimation uses `tiktoken` pricing data. Returns `None` for models without pricing information.
 
