@@ -27,17 +27,17 @@ tracing = { version = "0.1", optional = true }
 # longer drags several megabytes of tokenizer data in behind it.
 # tests/cost_tracking.rs asserts that no vocabulary is compiled in.
 #
-# 4.1.1 is a floor, not a preference: 4.1 resolves model ids the way the
-# provider APIs spell them, and 4.1.1 carries the embedding models two of this
-# crate's defaults name — `gemini-embedding-001` and the Voyage family. Below
-# it, those defaults cost nothing and say nothing about why.
-tiktoken = { version = "4.1.1", optional = true, default-features = false }
-candle-core = { version = "0.10", optional = true }
-candle-nn = { version = "0.10", optional = true }
-candle-transformers = { version = "0.10", optional = true }
+# Nothing below 4.1.1 works here: 4.1 resolves model ids the way the provider
+# APIs spell them, and 4.1.1 carries the embedding models two of this crate's
+# defaults name — `gemini-embedding-001` and the Voyage family. Below it, those
+# defaults cost nothing and say nothing about why. 5.0 added `mistral-embed`.
+tiktoken = { version = "5.1.1", optional = true, default-features = false }
+candle-core = { version = "0.11", optional = true }
+candle-nn = { version = "0.11", optional = true }
+candle-transformers = { version = "0.11", optional = true }
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
 hf-hub = { version = "0.5", optional = true, features = ["tokio"] }
-ruzstd = { version = "0.8", optional = true }
+ruzstd = { version = "0.9", optional = true }
 
 [features]
 default = []
@@ -63,7 +63,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
 dotenvy = "0.15"
 # for examples/embedding_models (uses zstd compression when re-recording)
-zstd = "0.13"
+zstd = "0.14"
 
 [profile.release]
 lto = true
