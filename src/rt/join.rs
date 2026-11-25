@@ -55,8 +55,8 @@ pub(crate) async fn ordered<'a, T>(
 pub(crate) mod tests {
     use super::*;
     use std::future::Future;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::Context;
 
     use crate::error::Error;

@@ -39,7 +39,12 @@ impl Engine {
 
     /// Token ids of every text, cut at the model's limit, or `InputTooLong`
     /// for the first text over it when `refuse_long`.
-    fn tokenize(&self, texts: &[String], prefix: Option<&str>, refuse_long: bool) -> Result<Vec<Vec<u32>>> {
+    fn tokenize(
+        &self,
+        texts: &[String],
+        prefix: Option<&str>,
+        refuse_long: bool,
+    ) -> Result<Vec<Vec<u32>>> {
         let wp = wordpiece::get();
         let max = self.info.max_tokens;
         let mut joined = String::new();
@@ -107,8 +112,10 @@ impl Engine {
         }
         let padded = batch.iter().any(|e| e.len() < len);
         let shape = (batch.len(), len);
-        let ids = Tensor::from_vec(ids, shape, &device).map_err(tensor_err("tensor creation failed"))?;
-        let mask = Tensor::from_vec(mask, shape, &device).map_err(tensor_err("tensor creation failed"))?;
+        let ids =
+            Tensor::from_vec(ids, shape, &device).map_err(tensor_err("tensor creation failed"))?;
+        let mask =
+            Tensor::from_vec(mask, shape, &device).map_err(tensor_err("tensor creation failed"))?;
         let states = self
             .model
             .forward(&ids, padded.then_some(&mask))

@@ -1,4 +1,4 @@
-#![cfg(feature = "local")]
+#![cfg(all(feature = "local", feature = "reqwest"))]
 
 //! End-to-end tests for local inference pipeline.
 //!

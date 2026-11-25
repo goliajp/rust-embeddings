@@ -10,7 +10,7 @@ documentation = "https://docs.rs/embedrs"
 keywords = ["embeddings", "openai", "bert", "rag", "vector"]
 categories = ["api-bindings", "science", "text-processing"]
 readme = "README.md"
-exclude = ["examples/embedding_models/data.json.zst"]
+exclude = ["examples/embedding_models/data.json.zst", "tests/fixtures/"]
 
 [dependencies]
 # http + tls for the default transport; nothing else outside this crate in the default build
@@ -46,16 +46,16 @@ required-features = ["reqwest"]
 
 [[example]]
 name = "benchmark"
-required-features = ["local"]
+required-features = ["local", "reqwest"]
 
 [[example]]
 name = "local"
-required-features = ["local"]
+required-features = ["local", "reqwest"]
 
 [[example]]
 name = "embedding_models"
 path = "examples/embedding_models/main.rs"
-required-features = ["local"]
+required-features = ["local", "reqwest"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
@@ -64,8 +64,11 @@ dotenvy = "0.15"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 proptest = "1"
-# for examples/embedding_models (uses zstd compression when re-recording)
+# for examples/embedding_models (uses zstd compression when re-recording) and
+# the tokenizer fixtures
 zstd = "0.14"
+# reference for the wordpiece tests
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 # reference forward pass for the local model test
 candle-transformers = "0.11"
 

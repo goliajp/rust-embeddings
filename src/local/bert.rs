@@ -5,9 +5,9 @@
 //! attention scale folded into the query weights, and the fused softmax and
 //! layer-norm kernels.
 
+use super::model::BertShape;
 use candle_core::{DType, Result, Tensor};
 use candle_nn::VarBuilder;
-use super::model::BertShape;
 
 struct LayerNorm {
     weight: Tensor,
@@ -217,7 +217,11 @@ mod tests {
     #[test]
     #[ignore]
     fn matches_the_candle_reference() {
-        let texts = ["hi", "a somewhat longer sentence about rivers and stones", ""];
+        let texts = [
+            "hi",
+            "a somewhat longer sentence about rivers and stones",
+            "",
+        ];
         let transport = crate::transport::ReqwestTransport::shared();
         let rt = tokio::runtime::Runtime::new().unwrap();
         for m in models() {
@@ -226,7 +230,8 @@ mod tests {
                 .unwrap();
             // safety: read-only cache blob
             let vb = unsafe {
-                VarBuilder::from_mmaped_safetensors(&[path], candle_core::DType::F32, &Device::Cpu).unwrap()
+                VarBuilder::from_mmaped_safetensors(&[path], candle_core::DType::F32, &Device::Cpu)
+                    .unwrap()
             };
             let shape = m.shape();
             let reference = BertModel::load(vb.clone(), &reference_config(&shape)).unwrap();
@@ -251,8 +256,16 @@ mod tests {
             let mask = Tensor::from_vec(mask, (texts.len(), len), &Device::Cpu).unwrap();
             let types = ids.zeros_like().unwrap();
 
-            let want = reference.forward(&ids, &types, Some(&mask)).unwrap().to_vec3::<f32>().unwrap();
-            let got = ours.forward(&ids, Some(&mask)).unwrap().to_vec3::<f32>().unwrap();
+            let want = reference
+                .forward(&ids, &types, Some(&mask))
+                .unwrap()
+                .to_vec3::<f32>()
+                .unwrap();
+            let got = ours
+                .forward(&ids, Some(&mask))
+                .unwrap()
+                .to_vec3::<f32>()
+                .unwrap();
             let mut worst = 0f32;
             for (i, e) in enc.iter().enumerate() {
                 for t in 0..e.len() {

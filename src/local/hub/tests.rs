@@ -11,14 +11,14 @@ use crate::transport::{BoxFuture, HttpResponse, ResponseHead, TransportError, Tr
 /// Blocking HTTP/1.1 over std sockets: enough for these tests.
 struct StdTransport;
 
-fn exchange(
-    req: &HttpRequest,
-) -> io::Result<(
+type Exchanged = (
     u16,
     Vec<(String, String)>,
     BufReader<TcpStream>,
     Option<u64>,
-)> {
+);
+
+fn exchange(req: &HttpRequest) -> io::Result<Exchanged> {
     let rest = req.url.strip_prefix("http://").expect("http url");
     let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
     let mut s = TcpStream::connect(host)?;
