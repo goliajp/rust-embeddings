@@ -7,17 +7,7 @@ use embedrs::{cloud, cosine_similarity};
 
 #[tokio::main]
 async fn main() -> embedrs::Result<()> {
-    // load API key from .env.local (project root or crate dir)
     dotenvy::from_filename(".env.local").ok();
-    dotenvy::from_filename(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join(".env.local"),
-    )
-    .ok();
 
     let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY required");
 
