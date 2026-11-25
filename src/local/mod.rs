@@ -2,6 +2,7 @@
 
 mod bert;
 mod download;
+mod hub;
 mod inference;
 mod model;
 

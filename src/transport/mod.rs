@@ -34,7 +34,8 @@ pub trait Transport: Send + Sync + 'static {
     /// Resolve after `d`. Used for retry backoff and timeouts.
     fn sleep(&self, d: Duration) -> BoxFuture<'static, ()>;
 
-    /// Send one request and write the body to `sink` as it arrives.
+    /// Send one request and write the body to `sink` as it arrives. Only a
+    /// 2xx body is written; for other statuses only the head is returned.
     ///
     /// The default buffers the body through [`Transport::send`]; implement it
     /// to stream large downloads (local model weights) instead of holding
