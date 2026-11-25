@@ -58,8 +58,8 @@ async fn fallback_on_primary_failure() {
         .mount(&fallback)
         .await;
 
-    let client = embedrs::Client::openai_compatible("key", &primary.uri())
-        .with_fallback(embedrs::Client::openai_compatible("key2", &fallback.uri()));
+    let client = embedrs::Client::openai_compatible("key", primary.uri())
+        .with_fallback(embedrs::Client::openai_compatible("key2", fallback.uri()));
 
     let result = client.embed(vec!["test".into()]).await.unwrap();
     assert_eq!(result.embeddings.len(), 1);
@@ -95,8 +95,8 @@ async fn fallback_skipped_on_success() {
         .mount(&fallback)
         .await;
 
-    let client = embedrs::Client::openai_compatible("key", &primary.uri())
-        .with_fallback(embedrs::Client::openai_compatible("key2", &fallback.uri()));
+    let client = embedrs::Client::openai_compatible("key", primary.uri())
+        .with_fallback(embedrs::Client::openai_compatible("key2", fallback.uri()));
 
     let result = client.embed(vec!["test".into()]).await.unwrap();
     assert_eq!(result.embeddings.len(), 1);
@@ -147,13 +147,68 @@ async fn fallback_chain_tries_all() {
         .mount(&fallback2)
         .await;
 
-    let client = embedrs::Client::openai_compatible("key", &primary.uri())
-        .with_fallback(embedrs::Client::openai_compatible("key2", &fallback1.uri()))
-        .with_fallback(embedrs::Client::openai_compatible("key3", &fallback2.uri()));
+    let client = embedrs::Client::openai_compatible("key", primary.uri())
+        .with_fallback(embedrs::Client::openai_compatible("key2", fallback1.uri()))
+        .with_fallback(embedrs::Client::openai_compatible("key3", fallback2.uri()));
 
     let result = client.embed(vec!["test".into()]).await.unwrap();
     assert_eq!(result.embeddings.len(), 1);
     assert_eq!(primary_count.load(Ordering::SeqCst), 1);
     assert_eq!(fallback1_count.load(Ordering::SeqCst), 1);
     assert_eq!(fallback2_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn fallback_does_not_receive_the_primary_model() {
+    let primary = MockServer::start().await;
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_body()))
+        .mount(&fallback)
+        .await;
+
+    let client = embedrs::Client::openai_compatible("k", primary.uri())
+        .with_model("text-embedding-3-large")
+        .with_dimensions(256)
+        .with_fallback(
+            embedrs::Client::mistral_compatible("k2", fallback.uri()).with_model("mistral-embed"),
+        );
+    client
+        .embed(vec!["hello".into()])
+        .model("text-embedding-3-small")
+        .await
+        .unwrap();
+
+    let sent = fallback.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap();
+    assert_eq!(body["model"], "mistral-embed");
+    assert!(body.get("output_dimension").is_none());
+}
+
+#[tokio::test]
+async fn fallback_without_its_own_model_uses_its_provider_default() {
+    let primary = MockServer::start().await;
+    let fallback = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&primary)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(success_body()))
+        .mount(&fallback)
+        .await;
+
+    let client = embedrs::Client::openai_compatible("k", primary.uri())
+        .with_model("text-embedding-3-large")
+        .with_fallback(embedrs::Client::voyage_compatible("k2", fallback.uri()));
+    client.embed(vec!["hello".into()]).await.unwrap();
+
+    let sent = fallback.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap();
+    assert_eq!(body["model"], "voyage-4-large");
 }

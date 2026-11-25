@@ -1,4 +1,4 @@
-//! Batch builder — chunk large inputs and dispatch with bounded concurrency.
+//! Batch builder: splits large inputs into requests and runs them with bounded concurrency.
 
 use std::future::{Future, IntoFuture};
 use std::pin::Pin;
@@ -32,12 +32,12 @@ impl<'a> BatchBuilder<'a> {
         Self {
             client,
             texts,
-            model: client.default_model.clone(),
-            dimensions: client.default_dimensions,
-            input_type: client.default_input_type,
+            model: None,
+            dimensions: None,
+            input_type: None,
             concurrency: 5,
             chunk_size: None,
-            backoff: client.default_backoff,
+            backoff: None,
             timeout: client.default_timeout,
         }
     }
@@ -78,7 +78,8 @@ impl<'a> BatchBuilder<'a> {
 
     /// Override the chunk size (texts per API request).
     ///
-    /// By default, this is inferred from the provider's maximum batch size.
+    /// By default, this is the provider's maximum batch size (128 for Voyage,
+    /// whose larger models cap a request at 120k tokens).
     pub fn chunk_size(self, size: usize) -> Self {
         Self {
             chunk_size: Some(size.max(1)),
@@ -86,7 +87,8 @@ impl<'a> BatchBuilder<'a> {
         }
     }
 
-    /// Enable exponential backoff for retryable HTTP errors (429, 503).
+    /// Retry with exponential backoff on 408, 429, 500, 502, 503, 504, 529
+    /// and on connection errors.
     pub fn retry_backoff(self, config: BackoffConfig) -> Self {
         Self {
             backoff: Some(config),
@@ -102,7 +104,7 @@ impl<'a> BatchBuilder<'a> {
     async fn execute(self) -> Result<EmbedResult> {
         let chunk_size = self
             .chunk_size
-            .unwrap_or_else(|| self.client.provider.max_batch_size());
+            .unwrap_or_else(|| self.client.provider.default_chunk_size());
 
         if self.texts.is_empty() {
             return Ok(EmbedResult {
@@ -110,6 +112,7 @@ impl<'a> BatchBuilder<'a> {
                 usage: Usage::default(),
                 model: self
                     .model
+                    .or_else(|| self.client.default_model.clone())
                     .unwrap_or_else(|| self.client.provider.default_model().to_string()),
             });
         }
@@ -142,10 +145,8 @@ impl<'a> BatchBuilder<'a> {
                 let model = model.clone();
 
                 async move {
-                    let _permit = sem
-                        .acquire_owned()
-                        .await
-                        .map_err(|_| crate::error::Error::Other("semaphore closed".into()))?;
+                    // the semaphore is never closed
+                    let _permit = sem.acquire_owned().await;
                     let mut builder = client.embed(chunk);
                     if let Some(ref m) = model {
                         builder = builder.model(m.as_ref());
@@ -211,11 +212,12 @@ mod tests {
             .with_dimensions(256)
             .with_input_type(InputType::SearchDocument);
 
+        // client defaults are applied per request, so a fallback keeps its own
         let builder = BatchBuilder::new(&client, vec!["a".into(), "b".into()]);
         assert_eq!(builder.concurrency, 5);
-        assert_eq!(builder.model.as_deref(), Some("text-embedding-3-large"));
-        assert_eq!(builder.dimensions, Some(256));
-        assert_eq!(builder.input_type, Some(InputType::SearchDocument));
+        assert_eq!(builder.model, None);
+        assert_eq!(builder.dimensions, None);
+        assert_eq!(builder.input_type, None);
         assert_eq!(builder.texts.len(), 2);
     }
 
@@ -258,7 +260,7 @@ mod tests {
             .with_timeout(Duration::from_secs(30));
 
         let builder = BatchBuilder::new(&client, vec!["a".into()]);
-        assert!(builder.backoff.is_some());
+        assert!(builder.backoff.is_none());
         assert_eq!(builder.timeout, Duration::from_secs(30));
 
         let builder = builder

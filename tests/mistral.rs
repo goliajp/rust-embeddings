@@ -25,7 +25,7 @@ async fn embed_mistral_basic() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::mistral_compatible("mistral-key", &server.uri());
+    let client = embedrs::Client::mistral_compatible("mistral-key", server.uri());
     let result = client
         .embed(vec!["hello".into(), "world".into()])
         .await
@@ -54,7 +54,7 @@ async fn embed_mistral_codestral_model_override() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::mistral_compatible("mistral-key", &server.uri());
+    let client = embedrs::Client::mistral_compatible("mistral-key", server.uri());
     let result = client
         .embed(vec!["fn main() {}".into()])
         .model("codestral-embed-2505")
@@ -75,7 +75,38 @@ async fn embed_mistral_api_error_429() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::mistral_compatible("mistral-key", &server.uri());
+    let client = embedrs::Client::mistral_compatible("mistral-key", server.uri());
     let err = client.embed(vec!["hi".into()]).await.unwrap_err();
     assert!(matches!(err, embedrs::Error::Api { status: 429, .. }));
+}
+
+#[tokio::test]
+async fn codestral_sends_output_dimension() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(mock_mistral_response()))
+        .mount(&server)
+        .await;
+    let client = embedrs::Client::mistral_compatible("k", server.uri());
+    client
+        .embed(vec!["a".into(), "b".into()])
+        .model("codestral-embed")
+        .dimensions(256)
+        .await
+        .unwrap();
+    let requests = server.received_requests().await.unwrap();
+    let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(sent["output_dimension"], 256);
+}
+
+#[tokio::test]
+async fn mistral_embed_rejects_dimensions() {
+    let client = embedrs::Client::mistral_compatible("k", "http://127.0.0.1:9");
+    let err = client
+        .embed(vec!["a".into()])
+        .dimensions(256)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("mistral-embed"), "{err}");
 }

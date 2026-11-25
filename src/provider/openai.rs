@@ -1,7 +1,11 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::RawEmbedResponse;
-use crate::error::{Error, Result};
+use super::http::post_json;
+use super::openai_shape::Response;
+use crate::error::Result;
+
+pub(crate) const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
 #[derive(Serialize)]
 struct Request<'a> {
@@ -12,21 +16,15 @@ struct Request<'a> {
     dimensions: Option<u32>,
 }
 
-#[derive(Deserialize)]
-struct Response {
-    data: Vec<EmbeddingData>,
-    model: String,
-    usage: UsageInfo,
-}
-
-#[derive(Deserialize)]
-struct EmbeddingData {
-    embedding: Vec<f32>,
-}
-
-#[derive(Deserialize)]
-struct UsageInfo {
-    total_tokens: u32,
+// openai's own endpoint sends base64 vectors (2.3x smaller than decimal text
+// and much cheaper to parse); compatible servers get "float", which every one
+// of them understands
+fn encoding_format(base_url: &str) -> &'static str {
+    if base_url == OPENAI_BASE_URL {
+        "base64"
+    } else {
+        "float"
+    }
 }
 
 pub(crate) async fn send_openai(
@@ -40,36 +38,13 @@ pub(crate) async fn send_openai(
     let body = Request {
         model,
         input: texts,
-        encoding_format: "float",
+        encoding_format: encoding_format(base_url),
         dimensions,
     };
-
-    let resp = http
+    let req = http
         .post(format!("{base_url}/embeddings"))
-        .header("Authorization", format!("Bearer {api_key}"))
-        .json(&body)
-        .send()
-        .await?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let retry_after = super::parse_retry_after(resp.headers());
-        let text = resp.text().await.unwrap_or_default();
-        return Err(Error::Api {
-            status: status.as_u16(),
-            message: text,
-            retry_after,
-        });
-    }
-
-    let data: Response = resp.json().await?;
-    let embeddings = data.data.into_iter().map(|d| d.embedding).collect();
-
-    Ok(RawEmbedResponse {
-        embeddings,
-        total_tokens: data.usage.total_tokens,
-        model: data.model,
-    })
+        .bearer_auth(api_key);
+    post_json::<Response>(req, &body).await?.into_raw(model)
 }
 
 #[cfg(test)]
@@ -77,7 +52,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_serialization_basic() {
+    fn request_serialization() {
         let input = vec!["hello".to_string(), "world".to_string()];
         let req = Request {
             model: "text-embedding-3-small",
@@ -87,52 +62,20 @@ mod tests {
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["model"], "text-embedding-3-small");
-        assert_eq!(json["input"][0], "hello");
         assert_eq!(json["input"][1], "world");
         assert_eq!(json["encoding_format"], "float");
         assert!(json.get("dimensions").is_none());
-    }
 
-    #[test]
-    fn request_serialization_with_dimensions() {
-        let input = vec!["test".to_string()];
         let req = Request {
-            model: "text-embedding-3-large",
-            input: &input,
-            encoding_format: "float",
             dimensions: Some(256),
+            ..req
         };
-        let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["dimensions"], 256);
+        assert_eq!(serde_json::to_value(&req).unwrap()["dimensions"], 256);
     }
 
     #[test]
-    fn response_deserialization() {
-        let json = r#"{
-            "data": [
-                {"embedding": [0.1, 0.2, 0.3]},
-                {"embedding": [0.4, 0.5, 0.6]}
-            ],
-            "model": "text-embedding-3-small",
-            "usage": {"total_tokens": 10}
-        }"#;
-        let resp: Response = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.data.len(), 2);
-        assert_eq!(resp.data[0].embedding, vec![0.1, 0.2, 0.3]);
-        assert_eq!(resp.data[1].embedding, vec![0.4, 0.5, 0.6]);
-        assert_eq!(resp.model, "text-embedding-3-small");
-        assert_eq!(resp.usage.total_tokens, 10);
-    }
-
-    #[test]
-    fn response_deserialization_empty_data() {
-        let json = r#"{
-            "data": [],
-            "model": "text-embedding-3-small",
-            "usage": {"total_tokens": 0}
-        }"#;
-        let resp: Response = serde_json::from_str(json).unwrap();
-        assert!(resp.data.is_empty());
-        assert_eq!(resp.usage.total_tokens, 0);
+    fn base64_only_for_the_official_endpoint() {
+        assert_eq!(encoding_format(OPENAI_BASE_URL), "base64");
+        assert_eq!(encoding_format("https://api.deepseek.com/v1"), "float");
     }
 }

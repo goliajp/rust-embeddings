@@ -22,7 +22,7 @@ async fn embed_jina_basic() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::jina_compatible("jina-key", &server.uri());
+    let client = embedrs::Client::jina_compatible("jina-key", server.uri());
     let result = client.embed(vec!["hello".into()]).await.unwrap();
 
     assert_eq!(result.embeddings.len(), 1);
@@ -41,7 +41,7 @@ async fn embed_jina_with_dimensions_and_task() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::jina_compatible("jina-key", &server.uri());
+    let client = embedrs::Client::jina_compatible("jina-key", server.uri());
     let result = client
         .embed(vec!["test".into()])
         .dimensions(256)
@@ -61,7 +61,7 @@ async fn embed_jina_api_error_429() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::jina_compatible("jina-key", &server.uri());
+    let client = embedrs::Client::jina_compatible("jina-key", server.uri());
     let err = client.embed(vec!["test".into()]).await.unwrap_err();
     match err {
         embedrs::Error::Api {
@@ -84,7 +84,7 @@ async fn embed_jina_api_error_500() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::jina_compatible("jina-key", &server.uri());
+    let client = embedrs::Client::jina_compatible("jina-key", server.uri());
     let err = client.embed(vec!["test".into()]).await.unwrap_err();
     match err {
         embedrs::Error::Api {

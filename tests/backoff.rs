@@ -39,7 +39,7 @@ async fn backoff_retries_on_429() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri()).with_retry_backoff(
+    let client = embedrs::Client::openai_compatible("test-key", server.uri()).with_retry_backoff(
         embedrs::BackoffConfig {
             base_delay: std::time::Duration::from_millis(10),
             max_delay: std::time::Duration::from_millis(100),
@@ -72,7 +72,7 @@ async fn timeout_interrupts_slow_request() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri())
+    let client = embedrs::Client::openai_compatible("test-key", server.uri())
         .with_timeout(std::time::Duration::from_millis(100));
 
     let start = std::time::Instant::now();
@@ -125,7 +125,7 @@ async fn retry_after_header_overrides_backoff() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri()).with_retry_backoff(
+    let client = embedrs::Client::openai_compatible("test-key", server.uri()).with_retry_backoff(
         embedrs::BackoffConfig {
             // base_delay tiny on purpose — if Retry-After is honored we wait ≥1s,
             // if it's ignored we'd finish in <50ms.
@@ -158,7 +158,55 @@ async fn no_backoff_fails_immediately() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     let err = client.embed(vec!["test".into()]).await.unwrap_err();
     assert!(matches!(err, embedrs::Error::Api { status: 429, .. }));
+}
+
+#[tokio::test]
+async fn backoff_retries_on_server_errors() {
+    for status in [500u16, 502, 504, 529] {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicU32::new(0));
+        let c = calls.clone();
+        Mock::given(method("POST"))
+            .and(path("/embeddings"))
+            .respond_with(move |_: &wiremock::Request| {
+                if c.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(status)
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "data": [{"index": 0, "embedding": [0.1]}],
+                        "model": "m",
+                        "usage": {"total_tokens": 1}
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+        let client = embedrs::Client::openai_compatible("k", server.uri()).with_retry_backoff(
+            embedrs::BackoffConfig {
+                base_delay: std::time::Duration::from_millis(1),
+                max_delay: std::time::Duration::from_millis(5),
+                jitter: false,
+                max_http_retries: 2,
+            },
+        );
+        client.embed(vec!["a".into()]).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "status {status}");
+    }
+}
+
+#[tokio::test]
+async fn client_errors_are_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = embedrs::Client::openai_compatible("k", server.uri())
+        .with_retry_backoff(embedrs::BackoffConfig::default());
+    let err = client.embed(vec!["a".into()]).await.unwrap_err();
+    assert!(matches!(err, embedrs::Error::Api { status: 401, .. }));
 }

@@ -1,6 +1,6 @@
 /// local: embed texts using the local model (all-MiniLM-L6-v2) and compute similarity
 ///
-/// no API key needed — model weights are downloaded from HuggingFace on first run (~23MB)
+/// no API key needed — model weights are downloaded from the Hugging Face Hub on first run (91 MB)
 ///
 /// run: cargo run -p embedrs --features local --example local --release
 use embedrs::{cosine_similarity, local};

@@ -27,7 +27,7 @@ async fn cost_estimated_for_known_model() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri())
+    let client = embedrs::Client::openai_compatible("test-key", server.uri())
         .with_model("text-embedding-3-small");
     let result = client.embed(vec!["hello".into()]).await.unwrap();
 
@@ -51,7 +51,7 @@ async fn cost_none_for_unknown_model() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri())
+    let client = embedrs::Client::openai_compatible("test-key", server.uri())
         .with_model("my-custom-embedding-v1");
     let result = client.embed(vec!["hello".into()]).await.unwrap();
 
@@ -125,5 +125,33 @@ fn default_models_that_the_price_table_carries() {
             tiktoken::pricing::estimate_cost(id, 1_000_000, 0).is_none(),
             "{id} is now priced upstream — drop it from this list and say so in the changelog"
         );
+    }
+}
+
+/// Gemini reports its count in `usageMetadata`; without one the count is
+/// unknown, so there is no cost rather than a cost of zero.
+#[tokio::test]
+async fn gemini_cost_follows_reported_usage() {
+    use wiremock::matchers::path_regex;
+
+    for (body, priced) in [
+        (
+            serde_json::json!({"embedding": {"values": [0.1]}, "usageMetadata": {"promptTokenCount": 1000}}),
+            true,
+        ),
+        (serde_json::json!({"embedding": {"values": [0.1]}}), false),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*:embedContent$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let client = embedrs::Client::gemini_compatible("k", server.uri());
+        let result = client.embed(vec!["hello".into()]).await.unwrap();
+        assert_eq!(result.usage.cost.is_some_and(|c| c > 0.0), priced);
+        if !priced {
+            assert_eq!(result.usage.cost, None);
+        }
     }
 }
