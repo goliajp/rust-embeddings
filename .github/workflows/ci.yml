@@ -35,18 +35,13 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # `cost-tracking` is not a default feature, so the `test` job above never
-      # compiled tests/cost_tracking.rs at all — the whole file is behind
-      # `#![cfg(feature = "cost-tracking")]`. It also holds the assertion that
-      # no tokenizer vocabulary is compiled in, which is the kind of thing that
-      # regresses silently.
       - run: cargo test --features cost-tracking
       - run: cargo test --features tracing
       - run: cargo test --features cost-tracking,tracing
       - run: cargo clippy --lib --features cost-tracking,tracing -- -D warnings
 
   lint:
-    name: fmt + clippy (lib strict)
+    name: fmt + clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -55,12 +50,25 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      # Library code is strict. Tests/examples/benches surface pre-existing
-      # cosmetic patterns (needless_borrows_for_generic_args, clone_on_copy,
-      # criterion::black_box deprecation, …) from the airs/guirs mono; we
-      # surface them as advisory only, not bundled into migration releases.
-      - run: cargo clippy --workspace --lib -- -D warnings
-      - run: cargo clippy --workspace --all-targets
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  local:
+    name: local inference (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-models-v1
+      - run: cargo test --features local
+      - run: cargo test --release --features local --test local_e2e -- --ignored
 
   audit:
     name: audit + deny

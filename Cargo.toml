@@ -2,14 +2,13 @@
 name = "embedrs"
 version = "0.6.1"
 edition = "2024"
-description = "Unified embedding — cloud APIs (OpenAI, Cohere, Gemini, Voyage, Jina, Mistral) + local inference, one interface"
-license = "MIT"
+description = "One async client for text embeddings: OpenAI, Cohere, Gemini, Voyage, Jina and Mistral APIs, plus local BERT models on CPU"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/goliajp/rust-embeddings"
-homepage = "https://github.com/goliajp/rust-embeddings"
 authors = ["GOLIA株式会社", "Li Hao <lihao@golia.jp>"]
 documentation = "https://docs.rs/embedrs"
-keywords = ["embedding", "openai", "cohere", "vector", "ai"]
-categories = ["api-bindings"]
+keywords = ["embeddings", "openai", "bert", "rag", "vector"]
+categories = ["api-bindings", "science", "text-processing"]
 readme = "README.md"
 exclude = ["examples/embedding_models/data.json.zst"]
 
@@ -22,16 +21,8 @@ thiserror = "2"
 rand = "0.10"
 futures = "0.3"
 tracing = { version = "0.1", optional = true }
-# Pricing tables only — this crate never encodes, counts, or constructs an
-# encoding. tiktoken 4 made the vocabularies optional, so `cost-tracking` no
-# longer drags several megabytes of tokenizer data in behind it.
-# tests/cost_tracking.rs asserts that no vocabulary is compiled in.
-#
-# Nothing below 4.1.1 works here: 4.1 resolves model ids the way the provider
-# APIs spell them, and 4.1.1 carries the embedding models two of this crate's
-# defaults name — `gemini-embedding-001` and the Voyage family. Below it, those
-# defaults cost nothing and say nothing about why. 5.0 added `mistral-embed`.
-tiktoken = { version = "5.1.1", optional = true, default-features = false }
+# pricing tables only; no vocabulary is compiled in (tests/cost_tracking.rs checks)
+tiktoken = { version = "5.4", optional = true, default-features = false }
 candle-core = { version = "0.11", optional = true }
 candle-nn = { version = "0.11", optional = true }
 candle-transformers = { version = "0.11", optional = true }
