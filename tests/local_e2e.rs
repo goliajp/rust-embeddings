@@ -2,7 +2,7 @@
 
 //! End-to-end tests for local inference pipeline.
 //!
-//! These tests download real models from HuggingFace Hub on first run (~23-133MB each).
+//! These tests download real models from the Hugging Face Hub on first run (67 to 133 MB each).
 //! Run with: `cargo test -p embedrs --features local --test local_e2e -- --ignored`
 
 use embedrs::Client;
@@ -163,4 +163,108 @@ async fn test_empty_text() {
 
     assert_eq!(result.embeddings.len(), 1);
     assert_eq!(result.embeddings[0].len(), 384);
+}
+
+fn words(n: usize) -> String {
+    let vocab = [
+        "river", "stone", "light", "market", "engine", "garden", "signal", "paper",
+    ];
+    (0..n)
+        .map(|i| vocab[(i * 7 + i / 3) % vocab.len()])
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[tokio::test]
+#[ignore]
+async fn concurrent_first_use_shares_one_download() {
+    let tasks: Vec<_> = (0..4)
+        .map(|_| {
+            tokio::spawn(async {
+                let client = Client::local("all-MiniLM-L6-v2").unwrap();
+                client.embed(vec!["concurrent".into()]).await
+            })
+        })
+        .collect();
+    for task in tasks {
+        let result = task.await.unwrap().unwrap();
+        assert_eq!(result.embeddings[0].len(), 384);
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn long_text_is_truncated_at_the_model_limit() {
+    let long = words(700);
+    for (model, limit) in [
+        ("bge-small-en-v1.5", 512),
+        ("all-MiniLM-L6-v2", 256),
+        ("all-MiniLM-L12-v2", 128),
+        ("gte-small", 512),
+    ] {
+        let client = Client::local(model).unwrap();
+        let result = client.embed(vec![long.clone()]).await.unwrap();
+        assert_eq!(result.embeddings[0].len(), 384, "{model}");
+        assert_eq!(result.usage.total_tokens, limit, "{model}");
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn token_count_excludes_padding() {
+    let client = Client::local("all-MiniLM-L6-v2").unwrap();
+    // [CLS] hi [SEP]
+    let one = client.embed(vec!["hi".into()]).await.unwrap();
+    assert_eq!(one.usage.total_tokens, 3);
+    // padded to the longer text in the batch, still counted per text
+    let two = client.embed(vec!["hi".into(), words(20)]).await.unwrap();
+    assert_eq!(two.usage.total_tokens, 3 + 22);
+}
+
+#[tokio::test]
+#[ignore]
+async fn mixed_lengths_keep_input_order() {
+    let client = Client::local("all-MiniLM-L6-v2").unwrap();
+    let texts: Vec<String> = (0..150).map(|i| words(1 + (i * 37) % 120)).collect();
+    let batch = client.embed(texts.clone()).await.unwrap();
+    for i in [0, 1, 7, 64, 65, 149] {
+        let single = client.embed(vec![texts[i].clone()]).await.unwrap();
+        let sim = cosine_similarity(&batch.embeddings[i], &single.embeddings[0]);
+        assert!(sim > 0.99999, "text {i}: cosine {sim}");
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn result_names_the_model_that_ran() {
+    let client = Client::local("all-MiniLM-L6-v2").unwrap();
+    let result = client
+        .embed(vec!["hello".into()])
+        .model("gte-small")
+        .await
+        .unwrap();
+    assert_eq!(result.model, "gte-small");
+    let result = client.embed(vec!["hello".into()]).await.unwrap();
+    assert_eq!(result.model, "all-MiniLM-L6-v2");
+}
+
+#[tokio::test]
+#[ignore]
+async fn bge_query_gets_its_instruction() {
+    let client = Client::local("bge-small-en-v1.5").unwrap();
+    let text = vec!["how do rivers form".to_string()];
+    let plain = client.embed(text.clone()).await.unwrap();
+    let query = client
+        .embed(text.clone())
+        .input_type(embedrs::InputType::SearchQuery)
+        .await
+        .unwrap();
+    let doc = client
+        .embed(text)
+        .input_type(embedrs::InputType::SearchDocument)
+        .await
+        .unwrap();
+    assert_eq!(plain.embeddings[0], doc.embeddings[0]);
+    assert!(query.usage.total_tokens > plain.usage.total_tokens);
+    assert!(cosine_similarity(&plain.embeddings[0], &query.embeddings[0]) < 0.9999);
 }

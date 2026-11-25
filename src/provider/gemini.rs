@@ -1,13 +1,16 @@
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
+use super::http::post_json;
+use super::vector::Vector;
 use super::{InputType, RawEmbedResponse};
 use crate::error::{Error, Result};
 
-// single text request
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EmbedContentRequest<'a> {
-    model: String,
+    model: &'a str,
     content: GemContent<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     task_type: Option<&'a str>,
@@ -15,7 +18,6 @@ struct EmbedContentRequest<'a> {
     output_dimensionality: Option<u32>,
 }
 
-// batch request
 #[derive(Serialize)]
 struct BatchRequest<'a> {
     requests: Vec<EmbedContentRequest<'a>>,
@@ -23,29 +25,37 @@ struct BatchRequest<'a> {
 
 #[derive(Serialize)]
 struct GemContent<'a> {
-    parts: Vec<GemPart<'a>>,
+    parts: [GemPart<'a>; 1],
 }
 
 #[derive(Serialize)]
 struct GemPart<'a> {
-    text: &'a str,
+    text: Cow<'a, str>,
 }
 
-// single response
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct EmbedContentResponse {
     embedding: Option<EmbeddingValues>,
+    usage_metadata: Option<UsageMetadata>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchResponse {
+    embeddings: Vec<EmbeddingValues>,
+    usage_metadata: Option<UsageMetadata>,
 }
 
 #[derive(Deserialize)]
 struct EmbeddingValues {
-    values: Vec<f32>,
+    values: Vector,
 }
 
-// batch response
 #[derive(Deserialize)]
-struct BatchResponse {
-    embeddings: Vec<EmbeddingValues>,
+#[serde(rename_all = "camelCase")]
+struct UsageMetadata {
+    prompt_token_count: Option<u32>,
 }
 
 fn map_task_type(input_type: Option<InputType>) -> Option<&'static str> {
@@ -57,6 +67,45 @@ fn map_task_type(input_type: Option<InputType>) -> Option<&'static str> {
     })
 }
 
+// gemini-embedding-2 takes no task type; the task is written in front of the text
+fn takes_task_prefix(model: &str) -> bool {
+    model.starts_with("gemini-embedding-2")
+}
+
+fn with_task_prefix(input_type: Option<InputType>, text: &str) -> Cow<'_, str> {
+    match input_type {
+        None => Cow::Borrowed(text),
+        Some(InputType::SearchQuery) => Cow::Owned(format!("task: search result | query: {text}")),
+        Some(InputType::SearchDocument) => Cow::Owned(format!("title: none | text: {text}")),
+        Some(InputType::Classification) => {
+            Cow::Owned(format!("task: classification | query: {text}"))
+        }
+        Some(InputType::Clustering) => Cow::Owned(format!("task: clustering | query: {text}")),
+    }
+}
+
+fn build_request<'a>(
+    model_path: &'a str,
+    model: &str,
+    text: &'a str,
+    dimensions: Option<u32>,
+    input_type: Option<InputType>,
+) -> EmbedContentRequest<'a> {
+    let (text, task_type) = if takes_task_prefix(model) {
+        (with_task_prefix(input_type, text), None)
+    } else {
+        (Cow::Borrowed(text), map_task_type(input_type))
+    };
+    EmbedContentRequest {
+        model: model_path,
+        content: GemContent {
+            parts: [GemPart { text }],
+        },
+        task_type,
+        output_dimensionality: dimensions,
+    }
+}
+
 pub(crate) async fn send_gemini(
     http: &reqwest::Client,
     base_url: &str,
@@ -66,119 +115,37 @@ pub(crate) async fn send_gemini(
     dimensions: Option<u32>,
     input_type: Option<InputType>,
 ) -> Result<RawEmbedResponse> {
-    let task_type = map_task_type(input_type);
-
-    if texts.len() == 1 {
-        send_single(
-            http, base_url, api_key, model, &texts[0], dimensions, task_type,
-        )
-        .await
-    } else {
-        send_batch(http, base_url, api_key, model, texts, dimensions, task_type).await
-    }
-}
-
-async fn send_single(
-    http: &reqwest::Client,
-    base_url: &str,
-    api_key: &str,
-    model: &str,
-    text: &str,
-    dimensions: Option<u32>,
-    task_type: Option<&str>,
-) -> Result<RawEmbedResponse> {
     let model_path = format!("models/{model}");
-    let body = EmbedContentRequest {
-        model: model_path,
-        content: GemContent {
-            parts: vec![GemPart { text }],
-        },
-        task_type,
-        output_dimensionality: dimensions,
-    };
-
-    let url = format!("{base_url}/models/{model}:embedContent?key={api_key}");
-    let resp = http
-        .post(&url)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let retry_after = super::parse_retry_after(resp.headers());
-        let text = resp.text().await.unwrap_or_default();
-        return Err(Error::Api {
-            status: status.as_u16(),
-            message: text,
-            retry_after,
-        });
-    }
-
-    let data: EmbedContentResponse = resp.json().await?;
-    let embedding = data
-        .embedding
-        .ok_or_else(|| Error::Other("no embedding in gemini response".into()))?;
-
-    Ok(RawEmbedResponse {
-        embeddings: vec![embedding.values],
-        total_tokens: 0,
-        model: model.to_string(),
-    })
-}
-
-async fn send_batch(
-    http: &reqwest::Client,
-    base_url: &str,
-    api_key: &str,
-    model: &str,
-    texts: &[String],
-    dimensions: Option<u32>,
-    task_type: Option<&str>,
-) -> Result<RawEmbedResponse> {
-    let model_path = format!("models/{model}");
-    let requests: Vec<EmbedContentRequest> = texts
-        .iter()
-        .map(|t| EmbedContentRequest {
-            model: model_path.clone(),
-            content: GemContent {
-                parts: vec![GemPart { text: t }],
-            },
-            task_type,
-            output_dimensionality: dimensions,
+    // the key goes in a header: a url with it would end up in error messages and logs
+    if let [text] = texts {
+        let body = build_request(&model_path, model, text, dimensions, input_type);
+        let req = http
+            .post(format!("{base_url}/models/{model}:embedContent"))
+            .header("x-goog-api-key", api_key);
+        let data: EmbedContentResponse = post_json(req, &body).await?;
+        let embedding = data
+            .embedding
+            .ok_or_else(|| Error::Other("no embedding in gemini response".into()))?;
+        Ok(RawEmbedResponse {
+            embeddings: vec![embedding.values.0],
+            total_tokens: data.usage_metadata.and_then(|u| u.prompt_token_count),
+            model: model.to_string(),
         })
-        .collect();
-
-    let body = BatchRequest { requests };
-    let url = format!("{base_url}/models/{model}:batchEmbedContents?key={api_key}");
-
-    let resp = http
-        .post(&url)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let retry_after = super::parse_retry_after(resp.headers());
-        let text = resp.text().await.unwrap_or_default();
-        return Err(Error::Api {
-            status: status.as_u16(),
-            message: text,
-            retry_after,
-        });
+    } else {
+        let requests = texts
+            .iter()
+            .map(|t| build_request(&model_path, model, t, dimensions, input_type))
+            .collect();
+        let req = http
+            .post(format!("{base_url}/models/{model}:batchEmbedContents"))
+            .header("x-goog-api-key", api_key);
+        let data: BatchResponse = post_json(req, &BatchRequest { requests }).await?;
+        Ok(RawEmbedResponse {
+            embeddings: data.embeddings.into_iter().map(|e| e.values.0).collect(),
+            total_tokens: data.usage_metadata.and_then(|u| u.prompt_token_count),
+            model: model.to_string(),
+        })
     }
-
-    let data: BatchResponse = resp.json().await?;
-    let embeddings = data.embeddings.into_iter().map(|e| e.values).collect();
-
-    Ok(RawEmbedResponse {
-        embeddings,
-        total_tokens: 0,
-        model: model.to_string(),
-    })
 }
 
 #[cfg(test)]
@@ -186,150 +153,102 @@ mod tests {
     use super::*;
 
     #[test]
-    fn single_request_serialization() {
-        let req = EmbedContentRequest {
-            model: "models/gemini-embedding-001".to_string(),
-            content: GemContent {
-                parts: vec![GemPart { text: "hello" }],
-            },
-            task_type: Some("RETRIEVAL_DOCUMENT"),
-            output_dimensionality: Some(256),
-        };
+    fn request_for_gemini_embedding_001() {
+        let req = build_request(
+            "models/gemini-embedding-001",
+            "gemini-embedding-001",
+            "hello",
+            Some(256),
+            Some(InputType::SearchDocument),
+        );
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["model"], "models/gemini-embedding-001");
         assert_eq!(json["content"]["parts"][0]["text"], "hello");
         assert_eq!(json["taskType"], "RETRIEVAL_DOCUMENT");
         assert_eq!(json["outputDimensionality"], 256);
-    }
 
-    #[test]
-    fn single_request_serialization_no_optional_fields() {
-        let req = EmbedContentRequest {
-            model: "models/gemini-embedding-001".to_string(),
-            content: GemContent {
-                parts: vec![GemPart { text: "test" }],
-            },
-            task_type: None,
-            output_dimensionality: None,
-        };
+        let req = build_request("models/x", "gemini-embedding-001", "t", None, None);
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("taskType").is_none());
         assert!(json.get("outputDimensionality").is_none());
     }
 
     #[test]
-    fn batch_request_serialization() {
-        let req = BatchRequest {
-            requests: vec![
-                EmbedContentRequest {
-                    model: "models/gemini-embedding-001".to_string(),
-                    content: GemContent {
-                        parts: vec![GemPart { text: "a" }],
-                    },
-                    task_type: None,
-                    output_dimensionality: None,
-                },
-                EmbedContentRequest {
-                    model: "models/gemini-embedding-001".to_string(),
-                    content: GemContent {
-                        parts: vec![GemPart { text: "b" }],
-                    },
-                    task_type: None,
-                    output_dimensionality: None,
-                },
-            ],
-        };
+    fn gemini_embedding_2_gets_a_prefix_not_a_task_type() {
+        let req = build_request(
+            "models/gemini-embedding-2",
+            "gemini-embedding-2",
+            "how do rivers form",
+            None,
+            Some(InputType::SearchQuery),
+        );
         let json = serde_json::to_value(&req).unwrap();
-        let requests = json["requests"].as_array().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0]["content"]["parts"][0]["text"], "a");
-        assert_eq!(requests[1]["content"]["parts"][0]["text"], "b");
+        assert!(json.get("taskType").is_none());
+        assert_eq!(
+            json["content"]["parts"][0]["text"],
+            "task: search result | query: how do rivers form"
+        );
+        let req = build_request("m", "gemini-embedding-2", "plain", None, None);
+        assert_eq!(
+            serde_json::to_value(&req).unwrap()["content"]["parts"][0]["text"],
+            "plain"
+        );
     }
 
     #[test]
-    fn task_type_mapping_search_document() {
+    fn task_prefixes() {
+        assert_eq!(
+            with_task_prefix(Some(InputType::SearchDocument), "x"),
+            "title: none | text: x"
+        );
+        assert_eq!(
+            with_task_prefix(Some(InputType::Classification), "x"),
+            "task: classification | query: x"
+        );
+        assert_eq!(
+            with_task_prefix(Some(InputType::Clustering), "x"),
+            "task: clustering | query: x"
+        );
+    }
+
+    #[test]
+    fn task_type_mapping() {
         assert_eq!(
             map_task_type(Some(InputType::SearchDocument)),
             Some("RETRIEVAL_DOCUMENT")
         );
-    }
-
-    #[test]
-    fn task_type_mapping_search_query() {
         assert_eq!(
             map_task_type(Some(InputType::SearchQuery)),
             Some("RETRIEVAL_QUERY")
         );
-    }
-
-    #[test]
-    fn task_type_mapping_classification() {
         assert_eq!(
             map_task_type(Some(InputType::Classification)),
             Some("CLASSIFICATION")
         );
-    }
-
-    #[test]
-    fn task_type_mapping_clustering() {
         assert_eq!(
             map_task_type(Some(InputType::Clustering)),
             Some("CLUSTERING")
         );
-    }
-
-    #[test]
-    fn task_type_mapping_none() {
         assert_eq!(map_task_type(None), None);
     }
 
     #[test]
-    fn single_response_deserialization() {
-        let json = r#"{
-            "embedding": {
-                "values": [0.1, 0.2, 0.3]
-            }
-        }"#;
-        let resp: EmbedContentResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.embedding.unwrap().values, vec![0.1, 0.2, 0.3]);
-    }
+    fn responses_carry_token_counts() {
+        let one: EmbedContentResponse = serde_json::from_str(
+            r#"{"embedding":{"values":[0.1,0.2]},"usageMetadata":{"promptTokenCount":3}}"#,
+        )
+        .unwrap();
+        assert_eq!(one.embedding.unwrap().values.0, vec![0.1, 0.2]);
+        assert_eq!(one.usage_metadata.unwrap().prompt_token_count, Some(3));
 
-    #[test]
-    fn single_response_deserialization_no_embedding() {
-        let json = r#"{"embedding": null}"#;
-        let resp: EmbedContentResponse = serde_json::from_str(json).unwrap();
-        assert!(resp.embedding.is_none());
-    }
+        let batch: BatchResponse = serde_json::from_str(
+            r#"{"embeddings":[{"values":[0.1]},{"values":[0.3]}],"usageMetadata":{"promptTokenCount":7}}"#,
+        )
+        .unwrap();
+        assert_eq!(batch.embeddings.len(), 2);
+        assert_eq!(batch.usage_metadata.unwrap().prompt_token_count, Some(7));
 
-    #[test]
-    fn batch_response_deserialization() {
-        let json = r#"{
-            "embeddings": [
-                {"values": [0.1, 0.2]},
-                {"values": [0.3, 0.4]}
-            ]
-        }"#;
-        let resp: BatchResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.embeddings.len(), 2);
-        assert_eq!(resp.embeddings[0].values, vec![0.1, 0.2]);
-        assert_eq!(resp.embeddings[1].values, vec![0.3, 0.4]);
-    }
-
-    #[test]
-    fn camel_case_serialization() {
-        // verify serde rename_all = "camelCase" works
-        let req = EmbedContentRequest {
-            model: "models/test".to_string(),
-            content: GemContent {
-                parts: vec![GemPart { text: "x" }],
-            },
-            task_type: Some("RETRIEVAL_QUERY"),
-            output_dimensionality: Some(128),
-        };
-        let json_str = serde_json::to_string(&req).unwrap();
-        assert!(json_str.contains("taskType"));
-        assert!(json_str.contains("outputDimensionality"));
-        assert!(!json_str.contains("task_type"));
-        assert!(!json_str.contains("output_dimensionality"));
+        let bare: BatchResponse = serde_json::from_str(r#"{"embeddings":[]}"#).unwrap();
+        assert!(bare.usage_metadata.is_none());
     }
 }

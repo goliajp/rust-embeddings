@@ -23,7 +23,7 @@ async fn embed_voyage_basic() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::voyage_compatible("voyage-key", &server.uri());
+    let client = embedrs::Client::voyage_compatible("voyage-key", server.uri());
     let result = client.embed(vec!["hello".into()]).await.unwrap();
 
     assert_eq!(result.embeddings.len(), 1);
@@ -49,7 +49,7 @@ async fn embed_voyage_v4_large_model_override() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::voyage_compatible("voyage-key", &server.uri());
+    let client = embedrs::Client::voyage_compatible("voyage-key", server.uri());
     let result = client
         .embed(vec!["hello".into()])
         .model("voyage-4-large")
@@ -70,7 +70,7 @@ async fn embed_voyage_with_input_type() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::voyage_compatible("voyage-key", &server.uri());
+    let client = embedrs::Client::voyage_compatible("voyage-key", server.uri());
     let result = client
         .embed(vec!["test".into()])
         .input_type(embedrs::InputType::SearchQuery)
@@ -89,7 +89,7 @@ async fn embed_voyage_api_error_429() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::voyage_compatible("voyage-key", &server.uri());
+    let client = embedrs::Client::voyage_compatible("voyage-key", server.uri());
     let err = client.embed(vec!["test".into()]).await.unwrap_err();
     match err {
         embedrs::Error::Api {
@@ -112,7 +112,7 @@ async fn embed_voyage_api_error_500() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::voyage_compatible("voyage-key", &server.uri());
+    let client = embedrs::Client::voyage_compatible("voyage-key", server.uri());
     let err = client.embed(vec!["test".into()]).await.unwrap_err();
     match err {
         embedrs::Error::Api {
@@ -123,4 +123,42 @@ async fn embed_voyage_api_error_500() {
         }
         _ => panic!("expected Api error, got {err:?}"),
     }
+}
+
+#[tokio::test]
+async fn voyage_asks_for_base64_and_sends_output_dimension() {
+    let server = MockServer::start().await;
+    let body = serde_json::json!({
+        "data": [{"index": 0, "embedding": "AACAPwAAAEA="}],
+        "model": "voyage-4-large",
+        "usage": {"total_tokens": 2}
+    });
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    let client = embedrs::Client::voyage_compatible("k", server.uri());
+    let result = client
+        .embed(vec!["a".into()])
+        .dimensions(512)
+        .await
+        .unwrap();
+    assert_eq!(result.embeddings, vec![vec![1.0, 2.0]]);
+    let requests = server.received_requests().await.unwrap();
+    let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(sent["encoding_format"], "base64");
+    assert_eq!(sent["output_dimension"], 512);
+}
+
+#[tokio::test]
+async fn voyage_fixed_width_model_rejects_dimensions() {
+    let client = embedrs::Client::voyage_compatible("k", "http://127.0.0.1:9");
+    let err = client
+        .embed(vec!["a".into()])
+        .model("voyage-law-2")
+        .dimensions(512)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("voyage-law-2"), "{err}");
 }

@@ -2,60 +2,46 @@ use std::sync::Arc;
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::bert::BertModel;
-use tokenizers::Tokenizer;
+use tokenizers::{Tokenizer, TruncationParams};
 
+use super::bert::Bert;
 use super::download;
 use super::model::{ModelDefinition, PoolingStrategy};
 use crate::error::{Error, Result};
 
-/// Cached inference engine holding a loaded model and tokenizer.
+// texts are sorted by token count and run in groups of this many, so each
+// group is padded only to its own longest text
+const GROUP: usize = 64;
+
+/// A loaded model and its tokenizer.
 pub(crate) struct InferenceEngine {
-    model: BertModel,
+    model: Bert,
     tokenizer: Tokenizer,
     pooling: PoolingStrategy,
-    #[allow(dead_code)]
-    model_name: String,
-    #[allow(dead_code)]
-    hidden_size: usize,
 }
 
-// candle tensors are Send + Sync on CPU
-unsafe impl Send for InferenceEngine {}
-unsafe impl Sync for InferenceEngine {}
-
 impl InferenceEngine {
-    /// Load the model from HuggingFace Hub (or cache) and decompress the tokenizer.
+    /// Load the weights (downloading them on first use) and the embedded tokenizer.
     pub async fn load(def: &ModelDefinition) -> Result<Arc<Self>> {
-        // decompress tokenizer
-        let tokenizer_bytes = decompress_zstd(def.tokenizer_data)?;
-        let tokenizer = Tokenizer::from_bytes(&tokenizer_bytes)
-            .map_err(|e| Error::Other(format!("failed to load tokenizer: {e}")))?;
-
-        // download weights
+        let tokenizer = load_tokenizer(def)?;
         let weights_path = download::ensure_model_file(def.hf_repo, def.hf_filename).await?;
 
-        // load model on blocking thread
         let config = def.config.clone();
-        let model_name = def.name.to_string();
-        let hidden_size = def.hidden_size;
         let pooling = def.pooling;
-
         let engine = tokio::task::spawn_blocking(move || -> Result<InferenceEngine> {
             let device = Device::Cpu;
+            // safety: the file is a read-only blob in the model cache; it is not
+            // modified while mapped
             let vb = unsafe {
                 VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)
                     .map_err(|e| Error::Other(format!("failed to load weights: {e}")))?
             };
-            let model = BertModel::load(vb, &config)
+            let model = Bert::load(vb, &config)
                 .map_err(|e| Error::Other(format!("failed to build model: {e}")))?;
-
             Ok(InferenceEngine {
                 model,
                 tokenizer,
                 pooling,
-                model_name,
-                hidden_size,
             })
         })
         .await
@@ -64,74 +50,86 @@ impl InferenceEngine {
         Ok(Arc::new(engine))
     }
 
-    /// Encode texts into embeddings. Returns (embeddings, total_tokens).
-    pub fn encode(&self, texts: &[String]) -> Result<(Vec<Vec<f32>>, u32)> {
+    /// Embed `texts`, each prefixed with `prefix` if given. Returns the vectors in
+    /// input order and the number of tokens the model read, padding excluded.
+    pub fn encode(&self, texts: &[String], prefix: Option<&str>) -> Result<(Vec<Vec<f32>>, u32)> {
+        if texts.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+        let inputs: Vec<String> = match prefix {
+            Some(p) => texts.iter().map(|t| format!("{p}{t}")).collect(),
+            None => texts.to_vec(),
+        };
         let encodings = self
             .tokenizer
-            .encode_batch(texts.to_vec(), true)
+            .encode_batch(inputs, true)
             .map_err(|e| Error::Other(format!("tokenization failed: {e}")))?;
+        let total_tokens: u32 = encodings.iter().map(|e| e.len() as u32).sum();
 
-        let total_tokens: u32 = encodings.iter().map(|e| e.get_ids().len() as u32).sum();
+        let mut order: Vec<usize> = (0..encodings.len()).collect();
+        order.sort_by_key(|&i| encodings[i].len());
 
-        let max_len = encodings
-            .iter()
-            .map(|e| e.get_ids().len())
-            .max()
-            .unwrap_or(0);
+        let mut out: Vec<Vec<f32>> = vec![Vec::new(); encodings.len()];
+        for group in order.chunks(GROUP) {
+            let batch: Vec<&tokenizers::Encoding> = group.iter().map(|&i| &encodings[i]).collect();
+            let rows = self.forward(&batch)?;
+            for (&i, row) in group.iter().zip(rows) {
+                out[i] = row;
+            }
+        }
+        Ok((out, total_tokens))
+    }
 
+    fn forward(&self, batch: &[&tokenizers::Encoding]) -> Result<Vec<Vec<f32>>> {
         let device = Device::Cpu;
+        let max_len = batch.iter().map(|e| e.len()).max().unwrap_or(0);
+        let token_ids = padded_tensor(batch, max_len, &device, |e| e.get_ids())?;
+        let attention_mask = padded_tensor(batch, max_len, &device, |e| e.get_attention_mask())?;
+        let padded = batch.iter().any(|e| e.len() < max_len);
 
-        // build padded tensors
-        let token_ids = build_padded_tensor(&encodings, max_len, &device, |e| e.get_ids())?;
-        let type_ids = build_padded_tensor(&encodings, max_len, &device, |e| e.get_type_ids())?;
-        let attention_mask =
-            build_padded_tensor(&encodings, max_len, &device, |e| e.get_attention_mask())?;
-
-        // forward pass
         let output = self
             .model
-            .forward(&token_ids, &type_ids, Some(&attention_mask))
+            .forward(&token_ids, padded.then_some(&attention_mask))
             .map_err(|e| Error::Other(format!("forward pass failed: {e}")))?;
-
-        // pooling
         let pooled = match self.pooling {
             PoolingStrategy::MeanPooling => mean_pool(&output, &attention_mask)?,
             PoolingStrategy::ClsToken => cls_pool(&output)?,
         };
-
-        // L2 normalize
-        let normalized = l2_normalize(&pooled)?;
-
-        let embeddings = normalized
+        l2_normalize(&pooled)?
             .to_vec2::<f32>()
-            .map_err(|e| Error::Other(format!("tensor extraction failed: {e}")))?;
-
-        Ok((embeddings, total_tokens))
-    }
-
-    #[allow(dead_code)]
-    pub fn model_name(&self) -> &str {
-        &self.model_name
+            .map_err(|e| Error::Other(format!("tensor extraction failed: {e}")))
     }
 }
 
-fn build_padded_tensor(
-    encodings: &[tokenizers::Encoding],
+pub(super) fn load_tokenizer(def: &ModelDefinition) -> Result<Tokenizer> {
+    let bytes = decompress_zstd(def.tokenizer_data)?;
+    let mut tokenizer = Tokenizer::from_bytes(&bytes)
+        .map_err(|e| Error::Other(format!("failed to load tokenizer: {e}")))?;
+    // the embedded tokenizer files pad every text to a fixed length; padding is
+    // done per group instead, and truncation follows the model's own limit
+    tokenizer.with_padding(None);
+    tokenizer
+        .with_truncation(Some(TruncationParams {
+            max_length: def.max_seq_length,
+            ..Default::default()
+        }))
+        .map_err(|e| Error::Other(format!("failed to set truncation: {e}")))?;
+    Ok(tokenizer)
+}
+
+fn padded_tensor(
+    batch: &[&tokenizers::Encoding],
     max_len: usize,
     device: &Device,
     extract: impl Fn(&tokenizers::Encoding) -> &[u32],
 ) -> Result<Tensor> {
-    let batch: Vec<Vec<u32>> = encodings
-        .iter()
-        .map(|e| {
-            let ids = extract(e);
-            let mut padded = ids.to_vec();
-            padded.resize(max_len, 0);
-            padded
-        })
-        .collect();
-
-    Tensor::new(batch, device).map_err(|e| Error::Other(format!("tensor creation failed: {e}")))
+    let mut flat = vec![0u32; batch.len() * max_len];
+    for (row, e) in flat.chunks_mut(max_len).zip(batch) {
+        let ids = extract(e);
+        row[..ids.len()].copy_from_slice(ids);
+    }
+    Tensor::from_vec(flat, (batch.len(), max_len), device)
+        .map_err(|e| Error::Other(format!("tensor creation failed: {e}")))
 }
 
 fn cls_pool(output: &Tensor) -> Result<Tensor> {

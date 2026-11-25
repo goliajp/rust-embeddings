@@ -1,21 +1,11 @@
 //! # embedrs
 //!
-//! Unified embedding solution — cloud APIs + local inference through one interface.
-//! Opinionated defaults backed by [benchmark data](https://github.com/goliajp/airs/tree/develop/crates/benchrs).
-//!
-//! ## Design: 用就要好用 (if we build it, it must be great)
-//!
-//! - **`local()`** → all-MiniLM-L6-v2 (23MB, free, no API key)
-//! - **`cloud(key)`** → OpenAI text-embedding-3-small (best discrimination, cheapest)
-//! - Both produce the same `EmbedResult` — write code once, switch backends in one line
-//!
-//! Defaults chosen by 8-dimension benchmark across 8 models. See [benchrs](https://github.com/goliajp/airs/tree/develop/crates/benchrs).
-//!
-//! ## Quick start
+//! One async client for text embeddings: the OpenAI, Cohere, Gemini, Voyage,
+//! Jina and Mistral APIs, and four small BERT models run locally on the CPU
+//! (feature `local`). Every backend returns the same [`EmbedResult`].
 //!
 //! ```rust,no_run
 //! # async fn run() -> embedrs::Result<()> {
-//! // cloud — one key, done
 //! let client = embedrs::cloud("sk-...");
 //! let result = client.embed(vec!["hello world".into()]).await?;
 //! println!("dimensions: {}", result.embeddings[0].len());
@@ -23,59 +13,22 @@
 //! # }
 //! ```
 //!
-//! With the `local` feature enabled:
+//! With the `local` feature, [`local()`] runs `all-MiniLM-L6-v2` in-process;
+//! the weights (91 MB) are downloaded into the Hugging Face cache on first use.
 //!
-//! ```rust,ignore
-//! // local — zero config, free, 23MB model downloaded on first use
-//! let client = embedrs::local();
-//! let result = client.embed(vec!["hello world".into()]).await?;
-//! ```
+//! [`Client::embed_batch`] splits large inputs into requests the provider
+//! accepts and sends them concurrently. [`Client::with_fallback`] chains
+//! providers, [`Client::with_retry_backoff`] retries transient failures, and
+//! the `cost-tracking` feature fills [`Usage::cost`] from `tiktoken`'s price
+//! table.
 //!
-//! ## Batch embedding
+//! ## Errors
 //!
-//! ```rust,no_run
-//! # async fn run() -> embedrs::Result<()> {
-//! let client = embedrs::cloud("sk-...");
-//! let texts: Vec<String> = (0..5000).map(|i| format!("text {i}")).collect();
-//! let result = client.embed_batch(texts)
-//!     .concurrency(5)
-//!     .await?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! ## Provider fallback
-//!
-//! Chain fallback providers for automatic failover:
-//!
-//! ```rust,no_run
-//! # async fn run() -> embedrs::Result<()> {
-//! let client = embedrs::Client::openai("sk-...")
-//!     .with_fallback(embedrs::Client::cohere("cohere-key"));
-//! // if OpenAI fails, automatically tries Cohere
-//! let result = client.embed(vec!["hello".into()]).await?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! ## Cost tracking
-//!
-//! Enable the `cost-tracking` feature to get estimated cost per request via `tiktoken` pricing data.
-//! The `Usage::cost` field will be `Some(f64)` for models with pricing info, `None` otherwise.
-//!
-//! ```toml
-//! embedrs = { version = "0.5", features = ["cost-tracking"] }
-//! ```
-//!
-//! ## Error handling
-//!
-//! All fallible operations return [`Result<T>`]. Match on [`Error`] variants for fine-grained control:
-//!
-//! - [`Error::Api`] — API returned an error status (e.g., 429 rate limit, 401 unauthorized)
-//! - [`Error::Timeout`] — request exceeded the configured timeout
-//! - [`Error::Http`] — network-level failure
-//! - [`Error::Json`] — response body could not be parsed
-//! - [`Error::InputTooLarge`] — input exceeded the provider's batch size limit
+//! - [`Error::Api`]: the provider answered with a non-2xx status
+//! - [`Error::Timeout`]: the request exceeded the configured timeout
+//! - [`Error::Http`]: network-level failure
+//! - [`Error::Json`]: the response body could not be parsed
+//! - [`Error::InputTooLarge`]: more texts than the provider accepts in one request
 //!
 //! ## Similarity
 //!
@@ -96,6 +49,7 @@ pub mod error;
 #[cfg(feature = "local")]
 pub mod local;
 pub(crate) mod provider;
+mod request;
 pub mod similarity;
 pub mod usage;
 
@@ -106,13 +60,11 @@ pub use provider::InputType;
 pub use similarity::{cosine_similarity, dot_product, euclidean_distance};
 pub use usage::Usage;
 
-/// Create a local embedding client with the recommended default model (all-MiniLM-L6-v2).
+/// Create a local embedding client for `all-MiniLM-L6-v2` (384 dimensions,
+/// texts truncated at 256 tokens).
 ///
-/// 23MB model, 384 dimensions, free, no API key needed.
-/// Model weights downloaded from HuggingFace Hub on first use and cached locally.
-///
-/// Backed by benchrs experiment: best clustering separation (8.73x), 100% retrieval,
-/// EN ρ=0.92, and the only model small enough for app embedding (<50MB).
+/// The weights (91 MB) are downloaded from the Hugging Face Hub on first use
+/// into the Hugging Face cache (`HF_HOME`, default `~/.cache/huggingface`).
 ///
 /// ```rust,no_run
 /// # async fn run() -> embedrs::Result<()> {
@@ -127,13 +79,8 @@ pub fn local() -> Client {
     Client::from_local_model(model_def)
 }
 
-/// Create a cloud embedding client with the recommended default provider (OpenAI text-embedding-3-small).
-///
-/// 1536 dimensions, best discrimination gap (0.58), 100% retrieval, balanced multilingual,
-/// cheapest cloud option at $0.02/1M tokens.
-///
-/// Backed by benchrs experiment: best discrimination means dissimilar texts get cosine ≈ 0.09
-/// (closest to zero), making similarity thresholds reliable.
+/// Create a cloud embedding client for OpenAI `text-embedding-3-small`
+/// (1536 dimensions, $0.02 per 1M tokens).
 ///
 /// ```rust,no_run
 /// # async fn run() -> embedrs::Result<()> {
@@ -183,6 +130,17 @@ mod tests {
         }
     }
 }
+
+// compile the README examples as doctests
+#[cfg(all(doctest, feature = "local", feature = "cost-tracking"))]
+#[doc = include_str!("../README.md")]
+struct ReadmeEn;
+#[cfg(all(doctest, feature = "local", feature = "cost-tracking"))]
+#[doc = include_str!("../README.ja.md")]
+struct ReadmeJa;
+#[cfg(all(doctest, feature = "local", feature = "cost-tracking"))]
+#[doc = include_str!("../README.zh-CN.md")]
+struct ReadmeZh;
 
 /// Prelude for convenient imports.
 pub mod prelude {

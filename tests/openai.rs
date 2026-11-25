@@ -24,7 +24,7 @@ async fn embed_openai_basic() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     let result = client
         .embed(vec!["hello".into(), "world".into()])
         .await
@@ -54,8 +54,11 @@ async fn with_http_client_replaces_underlying_client() {
         .unwrap();
 
     let client =
-        embedrs::Client::openai_compatible("test-key", &server.uri()).with_http_client(custom_http);
-    let result = client.embed(vec!["hi".into()]).await.unwrap();
+        embedrs::Client::openai_compatible("test-key", server.uri()).with_http_client(custom_http);
+    let result = client
+        .embed(vec!["hi".into(), "there".into()])
+        .await
+        .unwrap();
     assert_eq!(result.embeddings.len(), 2);
 }
 
@@ -69,8 +72,11 @@ async fn embed_openai_with_dimensions() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri()).with_dimensions(256);
-    let result = client.embed(vec!["test".into()]).await.unwrap();
+    let client = embedrs::Client::openai_compatible("test-key", server.uri()).with_dimensions(256);
+    let result = client
+        .embed(vec!["test".into(), "two".into()])
+        .await
+        .unwrap();
     assert!(!result.embeddings.is_empty());
 }
 
@@ -84,9 +90,9 @@ async fn embed_openai_with_model() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     let result = client
-        .embed(vec!["test".into()])
+        .embed(vec!["test".into(), "two".into()])
         .model("text-embedding-3-large")
         .await
         .unwrap();
@@ -104,7 +110,7 @@ async fn embed_openai_sends_correct_request_body() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri()).with_dimensions(256);
+    let client = embedrs::Client::openai_compatible("test-key", server.uri()).with_dimensions(256);
     let _result = client
         .embed(vec!["hello".into(), "world".into()])
         .model("text-embedding-3-large")
@@ -135,7 +141,7 @@ async fn embed_openai_api_error() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     let err = client.embed(vec!["test".into()]).await.unwrap_err();
     match err {
         embedrs::Error::Api {
@@ -165,7 +171,7 @@ async fn embed_empty_string_input() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     let result = client.embed(vec!["".into()]).await.unwrap();
 
     assert_eq!(result.embeddings.len(), 1);
@@ -189,11 +195,64 @@ async fn embed_very_long_text() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     // 100k character string
     let long_text = "a".repeat(100_000);
     let result = client.embed(vec![long_text]).await.unwrap();
 
     assert_eq!(result.embeddings.len(), 1);
     assert_eq!(result.usage.total_tokens, 8191);
+}
+
+#[tokio::test]
+async fn vectors_are_returned_in_input_order() {
+    let server = MockServer::start().await;
+    let body = serde_json::json!({
+        "data": [
+            {"index": 1, "embedding": [2.0]},
+            {"index": 0, "embedding": [1.0]}
+        ],
+        "model": "m",
+        "usage": {"total_tokens": 2}
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    let client = embedrs::Client::openai_compatible("k", server.uri());
+    let result = client.embed(vec!["a".into(), "b".into()]).await.unwrap();
+    assert_eq!(result.embeddings, vec![vec![1.0], vec![2.0]]);
+}
+
+#[tokio::test]
+async fn wrong_vector_count_is_an_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(mock_openai_response()))
+        .mount(&server)
+        .await;
+    let client = embedrs::Client::openai_compatible("k", server.uri());
+    let err = client.embed(vec!["only one".into()]).await.unwrap_err();
+    assert!(err.to_string().contains("2 vectors for 1 texts"), "{err}");
+}
+
+#[tokio::test]
+async fn compatible_endpoint_asks_for_floats_and_accepts_base64() {
+    let server = MockServer::start().await;
+    // 1.0f32 and 2.0f32, little-endian, base64
+    let body = serde_json::json!({
+        "data": [{"index": 0, "embedding": "AACAPwAAAEA="}],
+        "model": "m",
+        "usage": {"total_tokens": 1}
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    let client = embedrs::Client::openai_compatible("k", server.uri());
+    let result = client.embed(vec!["a".into()]).await.unwrap();
+    assert_eq!(result.embeddings, vec![vec![1.0, 2.0]]);
+    let requests = server.received_requests().await.unwrap();
+    let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(sent["encoding_format"], "float");
 }

@@ -30,6 +30,12 @@ tokenizers = { version = "0.23", optional = true, default-features = false, feat
 hf-hub = { version = "0.5", optional = true, features = ["tokio"] }
 ruzstd = { version = "0.9", optional = true }
 
+# apple's accelerate framework ships with macos, so the local backend uses it there
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.11", optional = true, features = ["accelerate"] }
+candle-nn = { version = "0.11", optional = true, features = ["accelerate"] }
+candle-transformers = { version = "0.11", optional = true, features = ["accelerate"] }
+
 [features]
 default = []
 tracing = ["dep:tracing"]

@@ -1,38 +1,45 @@
 mod cohere;
 mod gemini;
+mod http;
 mod jina;
 mod mistral;
 mod openai;
+mod openai_shape;
+mod vector;
 mod voyage;
 
 pub(crate) use cohere::send_cohere;
 pub(crate) use gemini::send_gemini;
 pub(crate) use jina::send_jina;
 pub(crate) use mistral::send_mistral;
-pub(crate) use openai::send_openai;
+pub(crate) use openai::{OPENAI_BASE_URL, send_openai};
 pub(crate) use voyage::send_voyage;
 
 #[cfg(feature = "local")]
 use std::sync::Arc;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 pub(crate) struct RawEmbedResponse {
     pub embeddings: Vec<Vec<f32>>,
-    pub total_tokens: u32,
+    /// `None` when the provider did not report a count
+    pub total_tokens: Option<u32>,
     pub model: String,
 }
 
-/// Parse `Retry-After` (RFC 7231 §7.1.3) in its delta-seconds form.
-///
-/// HTTP-date form is not parsed; callers fall back to configured backoff
-/// when this returns `None`.
-pub(crate) fn parse_retry_after(
-    headers: &reqwest::header::HeaderMap,
-) -> Option<std::time::Duration> {
-    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
-    let secs: u64 = raw.trim().parse().ok()?;
-    Some(std::time::Duration::from_secs(secs))
+/// Refuse a requested output width the model is known not to support, instead
+/// of sending it and getting vectors of another width back.
+pub(crate) fn check_dimensions(
+    model: &str,
+    dimensions: Option<u32>,
+    accepted: Option<bool>,
+) -> Result<()> {
+    match (dimensions, accepted) {
+        (Some(d), Some(false)) => Err(Error::Other(format!(
+            "{model} has a fixed output width and does not accept dimensions({d})"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// The type of input being embedded, used by providers that support it.
@@ -101,11 +108,20 @@ impl ProviderKind {
             Self::OpenAi { .. } => 2048,
             Self::Cohere { .. } => 96,
             Self::Gemini { .. } => 100,
-            Self::Voyage { .. } => 128,
+            Self::Voyage { .. } => 1000,
             Self::Jina { .. } => 2048,
             Self::Mistral { .. } => 512,
             #[cfg(feature = "local")]
             Self::Local { .. } => 256,
+        }
+    }
+
+    /// Texts per request when `embed_batch` splits the input. Voyage caps a
+    /// request at 120k tokens for its large models, which 1000 long texts exceed.
+    pub(crate) fn default_chunk_size(&self) -> usize {
+        match self {
+            Self::Voyage { .. } => 128,
+            _ => self.max_batch_size(),
         }
     }
 
@@ -137,7 +153,10 @@ impl ProviderKind {
                 send_openai(http, base_url, api_key, model, texts, dimensions).await
             }
             Self::Cohere { api_key, base_url } => {
-                send_cohere(http, base_url, api_key, model, texts, input_type).await
+                send_cohere(
+                    http, base_url, api_key, model, texts, dimensions, input_type,
+                )
+                .await
             }
             Self::Gemini { api_key, base_url } => {
                 send_gemini(
@@ -146,7 +165,10 @@ impl ProviderKind {
                 .await
             }
             Self::Voyage { api_key, base_url } => {
-                send_voyage(http, base_url, api_key, model, texts, input_type).await
+                send_voyage(
+                    http, base_url, api_key, model, texts, dimensions, input_type,
+                )
+                .await
             }
             Self::Jina { api_key, base_url } => {
                 send_jina(
@@ -155,27 +177,11 @@ impl ProviderKind {
                 .await
             }
             Self::Mistral { api_key, base_url } => {
-                send_mistral(http, base_url, api_key, model, texts).await
+                send_mistral(http, base_url, api_key, model, texts, dimensions).await
             }
             #[cfg(feature = "local")]
             Self::Local { model_def, engine } => {
-                let eng = engine
-                    .get_or_try_init(|| crate::local::InferenceEngine::load(model_def))
-                    .await?;
-                let eng = eng.clone();
-                // clone required: spawn_blocking needs 'static ownership, and we only have &[String]
-                let texts = texts.to_vec();
-                let (embeddings, total_tokens) =
-                    tokio::task::spawn_blocking(move || eng.encode(&texts))
-                        .await
-                        .map_err(|e| {
-                            crate::error::Error::Other(format!("inference task failed: {e}"))
-                        })??;
-                Ok(RawEmbedResponse {
-                    embeddings,
-                    total_tokens,
-                    model: model.to_string(),
-                })
+                crate::local::embed(model_def, engine, model, texts, dimensions, input_type).await
             }
         }
     }
@@ -260,6 +266,22 @@ mod tests {
             base_url: "u".into(),
         };
         assert_eq!(gemini.max_batch_size(), 100);
+
+        let voyage = ProviderKind::Voyage {
+            api_key: "k".into(),
+            base_url: "u".into(),
+        };
+        assert_eq!(voyage.max_batch_size(), 1000);
+        assert_eq!(voyage.default_chunk_size(), 128);
+        assert_eq!(openai.default_chunk_size(), 2048);
+    }
+
+    #[test]
+    fn known_fixed_width_rejects_dimensions() {
+        assert!(check_dimensions("m", Some(256), Some(false)).is_err());
+        assert!(check_dimensions("m", None, Some(false)).is_ok());
+        assert!(check_dimensions("m", Some(256), None).is_ok());
+        assert!(check_dimensions("m", Some(256), Some(true)).is_ok());
     }
 
     #[test]

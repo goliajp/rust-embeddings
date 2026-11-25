@@ -1,7 +1,9 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
+use super::http::post_json;
+use super::openai_shape::Response;
 use super::{InputType, RawEmbedResponse};
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 #[derive(Serialize)]
 struct Request<'a> {
@@ -9,23 +11,9 @@ struct Request<'a> {
     input: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
     input_type: Option<&'a str>,
-}
-
-#[derive(Deserialize)]
-struct Response {
-    data: Vec<EmbeddingData>,
-    model: String,
-    usage: UsageInfo,
-}
-
-#[derive(Deserialize)]
-struct EmbeddingData {
-    embedding: Vec<f32>,
-}
-
-#[derive(Deserialize)]
-struct UsageInfo {
-    total_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_dimension: Option<u32>,
+    encoding_format: &'a str,
 }
 
 fn map_input_type(input_type: Option<InputType>) -> Option<&'static str> {
@@ -37,46 +25,57 @@ fn map_input_type(input_type: Option<InputType>) -> Option<&'static str> {
     })
 }
 
+// models with a single output width; newer models take `output_dimension`
+const FIXED_WIDTH: &[&str] = &[
+    "voyage-3",
+    "voyage-3-lite",
+    "voyage-2",
+    "voyage-large-2",
+    "voyage-large-2-instruct",
+    "voyage-code-2",
+    "voyage-law-2",
+    "voyage-finance-2",
+    "voyage-multilingual-2",
+];
+
+/// `Some(false)` for models documented with a fixed width, `None` when unknown.
+pub(crate) fn accepts_dimensions(model: &str) -> Option<bool> {
+    if FIXED_WIDTH.contains(&model) {
+        Some(false)
+    } else if model.starts_with("voyage-4")
+        || model.starts_with("voyage-3.5")
+        || model == "voyage-3-large"
+        || model == "voyage-code-3"
+        || model == "voyage-code-4"
+    {
+        Some(true)
+    } else {
+        None
+    }
+}
+
 pub(crate) async fn send_voyage(
     http: &reqwest::Client,
     base_url: &str,
     api_key: &str,
     model: &str,
     texts: &[String],
+    dimensions: Option<u32>,
     input_type: Option<InputType>,
 ) -> Result<RawEmbedResponse> {
+    super::check_dimensions(model, dimensions, accepts_dimensions(model))?;
     let body = Request {
         model,
         input: texts,
         input_type: map_input_type(input_type),
+        output_dimension: dimensions,
+        // voyage documents base64 as the raw float32 array
+        encoding_format: "base64",
     };
-
-    let resp = http
+    let req = http
         .post(format!("{base_url}/embeddings"))
-        .header("Authorization", format!("Bearer {api_key}"))
-        .json(&body)
-        .send()
-        .await?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let retry_after = super::parse_retry_after(resp.headers());
-        let text = resp.text().await.unwrap_or_default();
-        return Err(Error::Api {
-            status: status.as_u16(),
-            message: text,
-            retry_after,
-        });
-    }
-
-    let data: Response = resp.json().await?;
-    let embeddings = data.data.into_iter().map(|d| d.embedding).collect();
-
-    Ok(RawEmbedResponse {
-        embeddings,
-        total_tokens: data.usage.total_tokens,
-        model: data.model,
-    })
+        .bearer_auth(api_key);
+    post_json::<Response>(req, &body).await?.into_raw(model)
 }
 
 #[cfg(test)]
@@ -84,92 +83,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_serialization_with_input_type() {
+    fn request_serialization() {
         let input = vec!["hello".to_string()];
         let req = Request {
-            model: "voyage-3-large",
+            model: "voyage-4-large",
             input: &input,
             input_type: Some("query"),
+            output_dimension: Some(512),
+            encoding_format: "base64",
         };
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["model"], "voyage-3-large");
+        assert_eq!(json["model"], "voyage-4-large");
         assert_eq!(json["input"][0], "hello");
         assert_eq!(json["input_type"], "query");
-    }
+        assert_eq!(json["output_dimension"], 512);
+        assert_eq!(json["encoding_format"], "base64");
 
-    #[test]
-    fn request_serialization_no_input_type() {
-        let input = vec!["test".to_string()];
         let req = Request {
-            model: "voyage-3-large",
-            input: &input,
             input_type: None,
+            output_dimension: None,
+            ..req
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("input_type").is_none());
+        assert!(json.get("output_dimension").is_none());
     }
 
     #[test]
-    fn input_type_mapping_search_document() {
+    fn input_type_mapping() {
         assert_eq!(
             map_input_type(Some(InputType::SearchDocument)),
             Some("document")
         );
-    }
-
-    #[test]
-    fn input_type_mapping_search_query() {
         assert_eq!(map_input_type(Some(InputType::SearchQuery)), Some("query"));
-    }
-
-    #[test]
-    fn input_type_mapping_classification_falls_back_to_document() {
         assert_eq!(
             map_input_type(Some(InputType::Classification)),
             Some("document")
         );
-    }
-
-    #[test]
-    fn input_type_mapping_clustering_falls_back_to_document() {
         assert_eq!(
             map_input_type(Some(InputType::Clustering)),
             Some("document")
         );
-    }
-
-    #[test]
-    fn input_type_mapping_none() {
         assert_eq!(map_input_type(None), None);
     }
 
     #[test]
-    fn response_deserialization() {
-        let json = r#"{
-            "data": [
-                {"embedding": [0.1, 0.2, 0.3]},
-                {"embedding": [0.4, 0.5, 0.6]}
-            ],
-            "model": "voyage-3-large",
-            "usage": {"total_tokens": 12}
-        }"#;
-        let resp: Response = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.data.len(), 2);
-        assert_eq!(resp.data[0].embedding, vec![0.1, 0.2, 0.3]);
-        assert_eq!(resp.data[1].embedding, vec![0.4, 0.5, 0.6]);
-        assert_eq!(resp.model, "voyage-3-large");
-        assert_eq!(resp.usage.total_tokens, 12);
-    }
-
-    #[test]
-    fn response_deserialization_single_embedding() {
-        let json = r#"{
-            "data": [{"embedding": [1.0]}],
-            "model": "voyage-3-large",
-            "usage": {"total_tokens": 1}
-        }"#;
-        let resp: Response = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.data.len(), 1);
-        assert_eq!(resp.data[0].embedding, vec![1.0]);
+    fn dimension_support_by_model() {
+        for m in [
+            "voyage-4-large",
+            "voyage-4-lite",
+            "voyage-3.5",
+            "voyage-3-large",
+            "voyage-code-3",
+        ] {
+            assert_eq!(accepts_dimensions(m), Some(true), "{m}");
+        }
+        for m in ["voyage-3", "voyage-law-2", "voyage-code-2"] {
+            assert_eq!(accepts_dimensions(m), Some(false), "{m}");
+        }
+        assert_eq!(accepts_dimensions("voyage-9"), None);
     }
 }
