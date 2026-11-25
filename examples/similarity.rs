@@ -1,6 +1,6 @@
 /// similarity: embed texts and find the most similar pair via cosine similarity
 ///
-/// run: cargo run -p embedrs --example similarity
+/// run: cargo run --example similarity
 ///
 /// requires OPENAI_API_KEY in environment or .env.local file
 use embedrs::{cloud, cosine_similarity};
@@ -26,19 +26,19 @@ async fn main() -> embedrs::Result<()> {
     println!("model: {}", result.model);
     println!(
         "embedded {} texts ({} dimensions)\n",
-        result.embeddings.len(),
-        result.embeddings[0].len()
+        result.len(),
+        result[0].len()
     );
 
     // compute pairwise cosine similarity
-    let n = result.embeddings.len();
+    let n = result.len();
     let mut best_sim = f32::NEG_INFINITY;
     let mut best_pair = (0, 0);
 
     println!("pairwise cosine similarity:");
     for i in 0..n {
         for j in (i + 1)..n {
-            let sim = cosine_similarity(&result.embeddings[i], &result.embeddings[j]);
+            let sim = cosine_similarity(&result[i], &result[j]);
             println!(
                 "  [{i}] vs [{j}]: {sim:.4}  ({} <-> {})",
                 short(&texts[i]),

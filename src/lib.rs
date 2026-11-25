@@ -5,30 +5,37 @@
 //! (feature `local`). Every backend returns the same [`EmbedResult`].
 //!
 //! ```rust,no_run
+//! # #[cfg(feature = "reqwest")]
 //! # async fn run() -> embedrs::Result<()> {
 //! let client = embedrs::cloud("sk-...");
-//! let result = client.embed(vec!["hello world".into()]).await?;
-//! println!("dimensions: {}", result.embeddings[0].len());
+//! let result = client.embed(["hello world"]).await?;
+//! println!("dimensions: {}", result[0].len());
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! With the `local` feature, [`local()`] runs `all-MiniLM-L6-v2` in-process;
-//! the weights (91 MB) are downloaded into the Hugging Face cache on first use.
-//!
 //! [`Client::embed_batch`] splits large inputs into requests the provider
 //! accepts and sends them concurrently. [`Client::with_fallback`] chains
-//! providers, [`Client::with_retry_backoff`] retries transient failures, and
-//! the `cost-tracking` feature fills [`Usage::cost`] from `tiktoken`'s price
+//! providers, [`Client::with_retry`] retries transient failures, and the
+//! `cost-tracking` feature fills [`Usage::cost`] from `tiktoken`'s price
 //! table.
+//!
+//! ## Transports
+//!
+//! The default `reqwest` feature sends requests with reqwest on tokio.
+//! Without it embedrs has no dependencies: bring a
+//! [`Transport`](transport::Transport) and build clients with
+//! [`Client::new`], or build requests with [`Client::prepare`] and send them
+//! with any HTTP client.
 //!
 //! ## Errors
 //!
 //! - [`Error::Api`]: the provider answered with a non-2xx status
-//! - [`Error::Timeout`]: the request exceeded the configured timeout
-//! - [`Error::Http`]: network-level failure
-//! - [`Error::Json`]: the response body could not be parsed
-//! - [`Error::InputTooLarge`]: more texts than the provider accepts in one request
+//! - [`Error::Transport`]: no HTTP answer (connect, TLS, I/O)
+//! - [`Error::Timeout`]: the call exceeded the configured timeout
+//! - [`Error::Decode`]: a 2xx body that is not what the provider documents
+//! - [`Error::TooManyInputs`], [`Error::InputTooLong`], [`Error::Unsupported`]:
+//!   refused before sending
 //!
 //! ## Similarity
 //!
@@ -42,26 +49,37 @@
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-pub mod backoff;
-pub mod batch;
-pub mod client;
-pub mod error;
+mod batch;
+mod client;
+mod endpoint;
+mod error;
+mod input;
+mod json;
 #[cfg(feature = "local")]
 pub mod local;
-pub(crate) mod provider;
+mod plan;
 mod request;
-pub mod similarity;
-pub mod usage;
+mod result;
+mod retry;
+mod rt;
+mod similarity;
+pub mod transport;
+mod usage;
+mod wire;
 
-pub use backoff::BackoffConfig;
-pub use client::{Client, EmbedResult};
-pub use error::{Error, Result};
-pub use provider::InputType;
+pub use batch::BatchBuilder;
+pub use client::{Client, Embed};
+pub use endpoint::{Endpoint, Limits};
+pub use error::{DecodeError, Error, Result};
+pub use input::{InputType, Inputs, Truncate};
+pub use request::{EmbedBuilder, Prepared};
+pub use result::EmbedResult;
+pub use retry::Backoff;
 pub use similarity::{cosine_similarity, dot_product, euclidean_distance};
 pub use usage::Usage;
 
-/// Create a local embedding client for `all-MiniLM-L6-v2` (384 dimensions,
-/// texts truncated at 256 tokens).
+/// A client for the bundled local model `all-MiniLM-L6-v2` (384
+/// dimensions, texts cut at 256 tokens).
 ///
 /// The weights (91 MB) are downloaded from the Hugging Face Hub on first use
 /// into the Hugging Face cache (`HF_HOME`, default `~/.cache/huggingface`).
@@ -69,65 +87,56 @@ pub use usage::Usage;
 /// ```rust,no_run
 /// # async fn run() -> embedrs::Result<()> {
 /// let client = embedrs::local();
-/// let result = client.embed(vec!["hello world".into()]).await?;
+/// let result = client.embed(["hello world"]).await?;
 /// # Ok(())
 /// # }
 /// ```
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", feature = "reqwest"))]
 pub fn local() -> Client {
-    let model_def = local::default_model();
-    Client::from_local_model(model_def)
+    Client::local(local::models()[0].name).expect("the default model is bundled")
 }
 
-/// Create a cloud embedding client for OpenAI `text-embedding-3-small`
-/// (1536 dimensions, $0.02 per 1M tokens).
+/// A client for OpenAI `text-embedding-3-small` (1536 dimensions) over
+/// [`ReqwestTransport`](transport::ReqwestTransport).
 ///
 /// ```rust,no_run
 /// # async fn run() -> embedrs::Result<()> {
 /// let client = embedrs::cloud("sk-...");
-/// let result = client.embed(vec!["hello world".into()]).await?;
+/// let result = client.embed(["hello world"]).await?;
 /// # Ok(())
 /// # }
 /// ```
+#[cfg(feature = "reqwest")]
 pub fn cloud(api_key: impl Into<String>) -> Client {
     Client::openai(api_key)
 }
 
+/// The common imports.
+pub mod prelude {
+    pub use crate::{
+        Backoff, Client, Embed, EmbedResult, Endpoint, Error, InputType, Result, Truncate, Usage,
+        cosine_similarity, dot_product, euclidean_distance,
+    };
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "reqwest")]
     #[test]
-    fn cloud_creates_openai_client() {
-        let client = crate::cloud("test-key");
-        match &client.provider {
-            crate::provider::ProviderKind::OpenAi { base_url, .. } => {
-                assert_eq!(base_url, "https://api.openai.com/v1");
-            }
-            _ => panic!("expected OpenAi provider"),
-        }
+    fn cloud_is_openai() {
+        let c = crate::cloud("k");
+        assert_eq!(c.provider(), "openai");
+        assert_eq!(c.default_model(), "text-embedding-3-small");
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", feature = "reqwest"))]
     #[test]
-    fn local_creates_default_client() {
-        let client = crate::local();
-        assert_eq!(client.default_model.as_deref(), Some("all-MiniLM-L6-v2"));
-        match &client.provider {
-            crate::provider::ProviderKind::Local { model_def, .. } => {
-                assert_eq!(model_def.name, "all-MiniLM-L6-v2");
-            }
-            _ => panic!("expected Local provider"),
-        }
-    }
-
-    #[cfg(feature = "local")]
-    #[test]
-    fn local_unknown_model_returns_error() {
-        let result = crate::Client::local("nonexistent");
-        assert!(result.is_err());
-        match result.err().unwrap() {
-            crate::Error::UnknownModel(name) => assert_eq!(name, "nonexistent"),
-            other => panic!("expected UnknownModel, got {other:?}"),
-        }
+    fn local_default_and_unknown() {
+        assert_eq!(crate::local().default_model(), "all-MiniLM-L6-v2");
+        assert!(matches!(
+            crate::Client::local("nonexistent"),
+            Err(crate::Error::UnknownModel(ref n)) if n == "nonexistent"
+        ));
     }
 }
 
@@ -141,11 +150,3 @@ struct ReadmeJa;
 #[cfg(all(doctest, feature = "local", feature = "cost-tracking"))]
 #[doc = include_str!("../README.zh-CN.md")]
 struct ReadmeZh;
-
-/// Prelude for convenient imports.
-pub mod prelude {
-    pub use crate::{
-        BackoffConfig, Client, EmbedResult, Error, InputType, Result, Usage, cosine_similarity,
-        dot_product, euclidean_distance,
-    };
-}

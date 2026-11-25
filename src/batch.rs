@@ -1,200 +1,154 @@
-//! Batch builder: splits large inputs into requests and runs them with bounded concurrency.
+//! [`BatchBuilder`]: any number of texts, split into requests and sent
+//! with bounded concurrency.
 
-use std::future::{Future, IntoFuture};
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
+use std::future::IntoFuture;
 
-use crate::backoff::BackoffConfig;
-use crate::client::{Client, EmbedResult};
-use crate::error::Result;
-use crate::provider::InputType;
+use crate::client::{Backend, Client};
+use crate::error::{DecodeError, Error, Result};
+use crate::input::{InputType, Inputs, Truncate};
+use crate::plan;
+use crate::request::{Overrides, run, setters};
+use crate::result::EmbedResult;
+use crate::retry::Backoff;
+use crate::transport::BoxFuture;
 use crate::usage::Usage;
 
-/// Builder for concurrent batch embedding.
+const MAX_CONCURRENCY: usize = 64;
+#[cfg(feature = "local")]
+const LOCAL_CHUNK: usize = 256;
+
+/// A batch call. Created by [`Client::embed_batch`]; `.await` it.
 ///
-/// Created by [`Client::embed_batch`]. Splits texts into provider-appropriate
-/// chunks and processes them concurrently with a semaphore-limited concurrency.
-pub struct BatchBuilder<'a> {
-    client: &'a Client,
-    texts: Vec<String>,
-    model: Option<String>,
-    dimensions: Option<u32>,
-    input_type: Option<InputType>,
+/// The input is cut into consecutive requests within the endpoint's
+/// [`Limits`](crate::Limits): inputs per request, and tokens per request
+/// where the provider has a cap (counted as UTF-8 bytes, which is never
+/// fewer than the tokens of a byte-level BPE; exact OpenAI token counts with
+/// the `token-count` feature). Each request gets the timeout, retries and
+/// fallbacks of a single call.
+#[must_use = "an embedding call does nothing until awaited"]
+pub struct BatchBuilder<'c, 't> {
+    client: &'c Client,
+    inputs: Inputs<'t>,
+    o: Overrides,
     concurrency: usize,
     chunk_size: Option<usize>,
-    backoff: Option<BackoffConfig>,
-    timeout: Duration,
 }
 
-impl<'a> BatchBuilder<'a> {
-    pub(crate) fn new(client: &'a Client, texts: Vec<String>) -> Self {
+impl<'c, 't> BatchBuilder<'c, 't> {
+    pub(crate) fn new(client: &'c Client, inputs: Inputs<'t>) -> Self {
         Self {
             client,
-            texts,
-            model: None,
-            dimensions: None,
-            input_type: None,
+            inputs,
+            o: Overrides::default(),
             concurrency: 5,
             chunk_size: None,
-            backoff: None,
-            timeout: client.default_timeout,
         }
     }
 
-    /// Set the model for all embeddings in the batch.
-    pub fn model(self, model: impl Into<String>) -> Self {
-        Self {
-            model: Some(model.into()),
-            ..self
-        }
+    setters!();
+
+    /// Requests in flight at once. Default 5, at most 64.
+    pub fn concurrency(mut self, n: usize) -> Self {
+        self.concurrency = n.clamp(1, MAX_CONCURRENCY);
+        self
     }
 
-    /// Set the output dimensions.
-    pub fn dimensions(self, dimensions: u32) -> Self {
-        Self {
-            dimensions: Some(dimensions),
-            ..self
-        }
+    /// At most this many inputs per request (default: the endpoint's limit).
+    pub fn chunk_size(mut self, n: usize) -> Self {
+        self.chunk_size = Some(n.max(1));
+        self
     }
 
-    /// Set the input type for all embeddings.
-    pub fn input_type(self, input_type: InputType) -> Self {
-        Self {
-            input_type: Some(input_type),
-            ..self
+    fn ranges(&self) -> Vec<std::ops::Range<usize>> {
+        match &self.client.backend {
+            Backend::Cloud(ep) => {
+                let max = self.chunk_size.unwrap_or(ep.limits.max_inputs);
+                let wire = ep.wire;
+                let cap = ep.limits.max_request_tokens.map(u64::from);
+                plan::split(&self.inputs, max, cap, |t| plan::tokens(wire, t))
+            }
+            #[cfg(feature = "local")]
+            Backend::Local(_) => {
+                let max = self.chunk_size.unwrap_or(LOCAL_CHUNK);
+                plan::split(&self.inputs, max, None, |_| 0)
+            }
         }
-    }
-
-    /// Set the maximum number of concurrent API requests.
-    ///
-    /// Default is 5.
-    pub fn concurrency(self, n: usize) -> Self {
-        Self {
-            concurrency: n.max(1),
-            ..self
-        }
-    }
-
-    /// Override the chunk size (texts per API request).
-    ///
-    /// By default, this is the provider's maximum batch size (128 for Voyage,
-    /// whose larger models cap a request at 120k tokens).
-    pub fn chunk_size(self, size: usize) -> Self {
-        Self {
-            chunk_size: Some(size.max(1)),
-            ..self
-        }
-    }
-
-    /// Retry with exponential backoff on 408, 429, 500, 502, 503, 504, 529
-    /// and on connection errors.
-    pub fn retry_backoff(self, config: BackoffConfig) -> Self {
-        Self {
-            backoff: Some(config),
-            ..self
-        }
-    }
-
-    /// Set the overall request timeout per chunk.
-    pub fn timeout(self, timeout: Duration) -> Self {
-        Self { timeout, ..self }
     }
 
     async fn execute(self) -> Result<EmbedResult> {
-        let chunk_size = self
-            .chunk_size
-            .unwrap_or_else(|| self.client.provider.default_chunk_size());
-
-        if self.texts.is_empty() {
-            return Ok(EmbedResult {
-                embeddings: Vec::new(),
-                usage: Usage::default(),
-                model: self
-                    .model
-                    .or_else(|| self.client.default_model.clone())
-                    .unwrap_or_else(|| self.client.provider.default_model().to_string()),
-            });
+        if self.inputs.is_empty() {
+            let model = crate::request::plan(self.client, &self.o, true).model;
+            return Ok(EmbedResult::from_flat(
+                Vec::new(),
+                0,
+                model,
+                Usage::new(Some(0), None),
+            ));
         }
-
-        let total_texts = self.texts.len();
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.concurrency));
-        let client = self.client;
-        let model: Option<Arc<str>> = self.model.map(|s| Arc::from(s.as_str()));
-        let dimensions = self.dimensions;
-        let input_type = self.input_type;
-        let backoff = self.backoff;
-        let timeout = self.timeout;
-
-        let chunks: Vec<Vec<String>> = {
-            let mut texts = self.texts;
-            let mut result = Vec::with_capacity(texts.len().div_ceil(chunk_size));
-            while !texts.is_empty() {
-                let at = chunk_size.min(texts.len());
-                let rest = texts.split_off(at);
-                result.push(texts);
-                texts = rest;
-            }
-            result
-        };
-
-        let handles: Vec<_> = chunks
+        let parts: Vec<(usize, Inputs<'_>)> = self
+            .ranges()
             .into_iter()
-            .map(|chunk| {
-                let sem = semaphore.clone();
-                let model = model.clone();
-
-                async move {
-                    // the semaphore is never closed
-                    let _permit = sem.acquire_owned().await;
-                    let mut builder = client.embed(chunk);
-                    if let Some(ref m) = model {
-                        builder = builder.model(m.as_ref());
-                    }
-                    if let Some(d) = dimensions {
-                        builder = builder.dimensions(d);
-                    }
-                    if let Some(it) = input_type {
-                        builder = builder.input_type(it);
-                    }
-                    if let Some(b) = backoff {
-                        builder = builder.retry_backoff(b);
-                    }
-                    builder = builder.timeout(timeout);
-                    builder.await
-                }
+            .map(|r| (r.start, self.inputs.slice(r)))
+            .collect();
+        let (client, o) = (self.client, &self.o);
+        let futs: Vec<BoxFuture<'_, Result<EmbedResult>>> = parts
+            .iter()
+            .map(|(start, part)| {
+                Box::pin(async move {
+                    run(client, part, o).await.map_err(|e| match e {
+                        Error::InputTooLong { index, tokens, max } => Error::InputTooLong {
+                            index: start + index,
+                            tokens,
+                            max,
+                        },
+                        e => e,
+                    })
+                }) as BoxFuture<'_, _>
             })
             .collect();
-
-        let results = futures::future::join_all(handles).await;
-
-        // merge results in order
-        let mut all_embeddings = Vec::with_capacity(total_texts);
-        let mut total_usage = Usage::default();
-        let mut result_model = String::new();
-
-        for result in results {
-            let embed_result = result?;
-            all_embeddings.extend(embed_result.embeddings);
-            total_usage.accumulate(embed_result.usage.total_tokens);
-            #[cfg(feature = "cost-tracking")]
-            total_usage.accumulate_cost(embed_result.usage.cost);
-            if result_model.is_empty() {
-                result_model = embed_result.model;
-            }
-        }
-
-        Ok(EmbedResult {
-            embeddings: all_embeddings,
-            usage: total_usage,
-            model: result_model,
-        })
+        let results = crate::rt::join::ordered(futs, self.concurrency).await?;
+        merge(results, client.provider())
     }
 }
 
-impl<'a> IntoFuture for BatchBuilder<'a> {
+fn merge(mut results: Vec<EmbedResult>, provider: &'static str) -> Result<EmbedResult> {
+    if results.len() == 1 {
+        return Ok(results.pop().expect("one result"));
+    }
+    let dim = results[0].dim();
+    let total = results.iter().map(|r| r.as_flat().len()).sum();
+    let mut data = Vec::with_capacity(total);
+    let mut usage: Option<Usage> = None;
+    let model = results[0].model.clone();
+    for r in results {
+        if r.dim() != dim && !r.is_empty() {
+            return Err(DecodeError::new(
+                provider,
+                0,
+                format!(
+                    "parts of one batch came back with widths {dim} and {} (a fallback served part of it)",
+                    r.dim()
+                ),
+            )
+            .into());
+        }
+        usage = Some(match usage {
+            None => r.usage.clone(),
+            Some(u) => u.add(&r.usage),
+        });
+        data.extend_from_slice(r.as_flat());
+    }
+    Ok(EmbedResult::from_flat(
+        data,
+        dim,
+        model,
+        usage.unwrap_or_default(),
+    ))
+}
+
+impl<'c, 't: 'c> IntoFuture for BatchBuilder<'c, 't> {
     type Output = Result<EmbedResult>;
-    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send + 'a>>;
+    type IntoFuture = BoxFuture<'c, Result<EmbedResult>>;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(self.execute())
@@ -203,81 +157,100 @@ impl<'a> IntoFuture for BatchBuilder<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+    use crate::endpoint::{Endpoint, Limits};
+    use crate::request::tests::{fake_full, ok, status};
+    use crate::rt::join::tests::block_on;
 
-    #[test]
-    fn builder_inherits_client_defaults() {
-        let client = Client::openai("key")
-            .with_model("text-embedding-3-large")
-            .with_dimensions(256)
-            .with_input_type(InputType::SearchDocument);
-
-        // client defaults are applied per request, so a fallback keeps its own
-        let builder = BatchBuilder::new(&client, vec!["a".into(), "b".into()]);
-        assert_eq!(builder.concurrency, 5);
-        assert_eq!(builder.model, None);
-        assert_eq!(builder.dimensions, None);
-        assert_eq!(builder.input_type, None);
-        assert_eq!(builder.texts.len(), 2);
+    fn body(values: &[f32], tokens: Option<u64>) -> String {
+        let data: Vec<String> = values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| format!(r#"{{"index":{i},"embedding":[{v},{v}]}}"#))
+            .collect();
+        let usage = tokens.map_or("null".into(), |t| format!(r#"{{"total_tokens":{t}}}"#));
+        format!(
+            r#"{{"data":[{}],"model":"m","usage":{usage}}}"#,
+            data.join(",")
+        )
     }
 
     #[test]
-    fn builder_overrides() {
-        let client = Client::openai("key");
-
-        let builder = BatchBuilder::new(&client, vec!["a".into()])
-            .model("text-embedding-3-large")
-            .dimensions(512)
-            .input_type(InputType::SearchQuery)
-            .concurrency(10)
-            .chunk_size(50);
-
-        assert_eq!(builder.model.as_deref(), Some("text-embedding-3-large"));
-        assert_eq!(builder.dimensions, Some(512));
-        assert_eq!(builder.input_type, Some(InputType::SearchQuery));
-        assert_eq!(builder.concurrency, 10);
-        assert_eq!(builder.chunk_size, Some(50));
+    fn splits_by_count_and_keeps_order() {
+        let t = fake_full(vec![
+            ok(&body(&[1.0, 2.0], Some(2))),
+            ok(&body(&[3.0], Some(1))),
+        ]);
+        let c = Client::new(Endpoint::openai_compatible("k", "http://x"), t.clone())
+            .with_timeout(Duration::from_secs(1000));
+        let r = block_on(
+            c.embed_batch(["a", "b", "c"])
+                .chunk_size(2)
+                .concurrency(1)
+                .into_future(),
+        )
+        .unwrap();
+        assert_eq!(r.len(), 3);
+        assert_eq!(&r[2], &[3.0, 3.0]);
+        assert_eq!(r.usage.total_tokens, Some(3));
+        let sent = t.sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert!(String::from_utf8_lossy(&sent[1].body).contains(r#""input":["c"]"#));
     }
 
     #[test]
-    fn concurrency_minimum_one() {
-        let client = Client::openai("key");
-        let builder = BatchBuilder::new(&client, vec![]).concurrency(0);
-        assert_eq!(builder.concurrency, 1);
+    fn splits_by_token_cap() {
+        let t = fake_full(vec![ok(&body(&[1.0], None)), ok(&body(&[2.0], Some(9)))]);
+        let ep =
+            Endpoint::openai_compatible("k", "http://x").limits(Limits::new(100).request_tokens(1));
+        let c = Client::new(ep, t.clone()).with_timeout(Duration::from_secs(1000));
+        let r = block_on(c.embed_batch(["aaaaa", "bbbbb"]).into_future()).unwrap();
+        assert_eq!(r.len(), 2);
+        // one part without a count makes the total unknown
+        assert_eq!(r.usage.total_tokens, None);
+        assert_eq!(t.sent.lock().unwrap().len(), 2);
     }
 
     #[test]
-    fn chunk_size_minimum_one() {
-        let client = Client::openai("key");
-        let builder = BatchBuilder::new(&client, vec![]).chunk_size(0);
-        assert_eq!(builder.chunk_size, Some(1));
+    fn first_error_fails_the_batch() {
+        let t = fake_full(vec![ok(&body(&[1.0], Some(1))), status(400, &[])]);
+        let c = Client::new(Endpoint::openai_compatible("k", "http://x"), t)
+            .with_timeout(Duration::from_secs(1000));
+        let e = block_on(
+            c.embed_batch(["a", "b"])
+                .chunk_size(1)
+                .concurrency(1)
+                .into_future(),
+        );
+        assert!(e.is_err());
     }
 
     #[test]
-    fn builder_backoff_and_timeout() {
-        let client = Client::openai("key")
-            .with_retry_backoff(BackoffConfig::default())
-            .with_timeout(Duration::from_secs(30));
-
-        let builder = BatchBuilder::new(&client, vec!["a".into()]);
-        assert!(builder.backoff.is_none());
-        assert_eq!(builder.timeout, Duration::from_secs(30));
-
-        let builder = builder
-            .retry_backoff(BackoffConfig {
-                max_http_retries: 5,
-                ..Default::default()
-            })
-            .timeout(Duration::from_secs(90));
-        assert_eq!(builder.backoff.as_ref().unwrap().max_http_retries, 5);
-        assert_eq!(builder.timeout, Duration::from_secs(90));
+    fn empty_batch_sends_nothing() {
+        let t = fake_full(vec![]);
+        let c = Client::new(Endpoint::voyage("k"), t.clone());
+        let empty: Vec<String> = vec![];
+        let r = block_on(c.embed_batch(empty).into_future()).unwrap();
+        assert!(r.is_empty());
+        assert_eq!(r.model, "voyage-4-large");
+        assert_eq!(r.usage.total_tokens, Some(0));
+        assert!(t.sent.lock().unwrap().is_empty());
     }
 
-    #[tokio::test]
-    async fn empty_batch_returns_empty() {
-        let client = Client::openai("key");
-        let result = client.embed_batch(vec![]).await.unwrap();
-        assert!(result.embeddings.is_empty());
-        assert_eq!(result.usage.total_tokens, 0);
+    #[test]
+    fn mixed_widths_are_an_error() {
+        let a = EmbedResult::from_flat(vec![1.0, 2.0], 2, "a", Usage::default());
+        let b = EmbedResult::from_flat(vec![1.0], 1, "b", Usage::default());
+        assert!(merge(vec![a, b], "openai").is_err());
+    }
+
+    #[test]
+    fn concurrency_is_clamped() {
+        let c = Client::new(Endpoint::openai("k"), fake_full(vec![]));
+        assert_eq!(c.embed_batch(["a"]).concurrency(0).concurrency, 1);
+        assert_eq!(c.embed_batch(["a"]).concurrency(1000).concurrency, 64);
+        assert_eq!(c.embed_batch(["a"]).chunk_size(0).chunk_size, Some(1));
     }
 }

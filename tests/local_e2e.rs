@@ -1,4 +1,4 @@
-#![cfg(feature = "local")]
+#![cfg(all(feature = "local", feature = "reqwest"))]
 
 //! End-to-end tests for local inference pipeline.
 //!
@@ -24,16 +24,16 @@ async fn test_minilm_l6_embed_single() {
     let client = Client::local("all-MiniLM-L6-v2").unwrap();
     let result = client.embed(vec!["hello world".into()]).await.unwrap();
 
-    assert_eq!(result.embeddings.len(), 1);
-    assert_eq!(result.embeddings[0].len(), 384);
-    let norm = l2_norm(&result.embeddings[0]);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].len(), 384);
+    let norm = l2_norm(&result[0]);
     assert!(
         (norm - 1.0).abs() < 1e-4,
         "expected L2 norm ≈ 1.0, got {norm}"
     );
     assert!(
-        result.usage.total_tokens > 0,
-        "expected total_tokens > 0, got {}",
+        result.usage.total_tokens.unwrap() > 0,
+        "expected total_tokens > 0, got {:?}",
         result.usage.total_tokens
     );
 }
@@ -44,16 +44,16 @@ async fn test_minilm_l12_embed() {
     let client = Client::local("all-MiniLM-L12-v2").unwrap();
     let result = client.embed(vec!["hello world".into()]).await.unwrap();
 
-    assert_eq!(result.embeddings.len(), 1);
-    assert_eq!(result.embeddings[0].len(), 384);
-    let norm = l2_norm(&result.embeddings[0]);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].len(), 384);
+    let norm = l2_norm(&result[0]);
     assert!(
         (norm - 1.0).abs() < 1e-4,
         "expected L2 norm ≈ 1.0, got {norm}"
     );
     assert!(
-        result.usage.total_tokens > 0,
-        "expected total_tokens > 0, got {}",
+        result.usage.total_tokens.unwrap() > 0,
+        "expected total_tokens > 0, got {:?}",
         result.usage.total_tokens
     );
 }
@@ -64,16 +64,16 @@ async fn test_bge_small_embed() {
     let client = Client::local("bge-small-en-v1.5").unwrap();
     let result = client.embed(vec!["hello world".into()]).await.unwrap();
 
-    assert_eq!(result.embeddings.len(), 1);
-    assert_eq!(result.embeddings[0].len(), 384);
-    let norm = l2_norm(&result.embeddings[0]);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].len(), 384);
+    let norm = l2_norm(&result[0]);
     assert!(
         (norm - 1.0).abs() < 1e-4,
         "expected L2 norm ≈ 1.0, got {norm}"
     );
     assert!(
-        result.usage.total_tokens > 0,
-        "expected total_tokens > 0, got {}",
+        result.usage.total_tokens.unwrap() > 0,
+        "expected total_tokens > 0, got {:?}",
         result.usage.total_tokens
     );
 }
@@ -84,16 +84,16 @@ async fn test_gte_small_embed() {
     let client = Client::local("gte-small").unwrap();
     let result = client.embed(vec!["hello world".into()]).await.unwrap();
 
-    assert_eq!(result.embeddings.len(), 1);
-    assert_eq!(result.embeddings[0].len(), 384);
-    let norm = l2_norm(&result.embeddings[0]);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].len(), 384);
+    let norm = l2_norm(&result[0]);
     assert!(
         (norm - 1.0).abs() < 1e-4,
         "expected L2 norm ≈ 1.0, got {norm}"
     );
     assert!(
-        result.usage.total_tokens > 0,
-        "expected total_tokens > 0, got {}",
+        result.usage.total_tokens.unwrap() > 0,
+        "expected total_tokens > 0, got {:?}",
         result.usage.total_tokens
     );
 }
@@ -111,10 +111,10 @@ async fn test_semantic_similarity() {
         .await
         .unwrap();
 
-    assert_eq!(result.embeddings.len(), 3);
+    assert_eq!(result.len(), 3);
 
-    let sim_dogs_cats = cosine_similarity(&result.embeddings[0], &result.embeddings[1]);
-    let sim_dogs_quantum = cosine_similarity(&result.embeddings[0], &result.embeddings[2]);
+    let sim_dogs_cats = cosine_similarity(&result[0], &result[1]);
+    let sim_dogs_quantum = cosine_similarity(&result[0], &result[2]);
 
     assert!(
         sim_dogs_cats > sim_dogs_quantum,
@@ -129,8 +129,8 @@ async fn test_batch_local() {
     let texts: Vec<String> = (0..20).map(|i| format!("sentence number {i}")).collect();
     let result = client.embed(texts).await.unwrap();
 
-    assert_eq!(result.embeddings.len(), 20);
-    for (i, emb) in result.embeddings.iter().enumerate() {
+    assert_eq!(result.len(), 20);
+    for (i, emb) in result.iter().enumerate() {
         assert_eq!(emb.len(), 384, "embedding {i} has wrong dimension");
         let norm = l2_norm(emb);
         assert!(
@@ -150,7 +150,7 @@ async fn test_deterministic() {
     let result2 = client.embed(text).await.unwrap();
 
     assert_eq!(
-        result1.embeddings[0], result2.embeddings[0],
+        result1[0], result2[0],
         "expected identical embeddings for the same input"
     );
 }
@@ -161,8 +161,8 @@ async fn test_empty_text() {
     let client = Client::local("all-MiniLM-L6-v2").unwrap();
     let result = client.embed(vec!["".to_string()]).await.unwrap();
 
-    assert_eq!(result.embeddings.len(), 1);
-    assert_eq!(result.embeddings[0].len(), 384);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].len(), 384);
 }
 
 fn words(n: usize) -> String {
@@ -188,7 +188,7 @@ async fn concurrent_first_use_shares_one_download() {
         .collect();
     for task in tasks {
         let result = task.await.unwrap().unwrap();
-        assert_eq!(result.embeddings[0].len(), 384);
+        assert_eq!(result[0].len(), 384);
     }
 }
 
@@ -204,8 +204,8 @@ async fn long_text_is_truncated_at_the_model_limit() {
     ] {
         let client = Client::local(model).unwrap();
         let result = client.embed(vec![long.clone()]).await.unwrap();
-        assert_eq!(result.embeddings[0].len(), 384, "{model}");
-        assert_eq!(result.usage.total_tokens, limit, "{model}");
+        assert_eq!(result[0].len(), 384, "{model}");
+        assert_eq!(result.usage.total_tokens, Some(limit as u64), "{model}");
     }
 }
 
@@ -215,10 +215,10 @@ async fn token_count_excludes_padding() {
     let client = Client::local("all-MiniLM-L6-v2").unwrap();
     // [CLS] hi [SEP]
     let one = client.embed(vec!["hi".into()]).await.unwrap();
-    assert_eq!(one.usage.total_tokens, 3);
+    assert_eq!(one.usage.total_tokens, Some(3));
     // padded to the longer text in the batch, still counted per text
     let two = client.embed(vec!["hi".into(), words(20)]).await.unwrap();
-    assert_eq!(two.usage.total_tokens, 3 + 22);
+    assert_eq!(two.usage.total_tokens, Some(3 + 22));
 }
 
 #[tokio::test]
@@ -229,7 +229,7 @@ async fn mixed_lengths_keep_input_order() {
     let batch = client.embed(texts.clone()).await.unwrap();
     for i in [0, 1, 7, 64, 65, 149] {
         let single = client.embed(vec![texts[i].clone()]).await.unwrap();
-        let sim = cosine_similarity(&batch.embeddings[i], &single.embeddings[0]);
+        let sim = cosine_similarity(&batch[i], &single[0]);
         assert!(sim > 0.99999, "text {i}: cosine {sim}");
     }
 }
@@ -264,7 +264,7 @@ async fn bge_query_gets_its_instruction() {
         .input_type(embedrs::InputType::SearchDocument)
         .await
         .unwrap();
-    assert_eq!(plain.embeddings[0], doc.embeddings[0]);
+    assert_eq!(plain[0], doc[0]);
     assert!(query.usage.total_tokens > plain.usage.total_tokens);
-    assert!(cosine_similarity(&plain.embeddings[0], &query.embeddings[0]) < 0.9999);
+    assert!(cosine_similarity(&plain[0], &query[0]) < 0.9999);
 }

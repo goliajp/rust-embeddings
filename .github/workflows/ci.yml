@@ -35,10 +35,16 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - run: cargo test --no-default-features
       - run: cargo test --features cost-tracking
       - run: cargo test --features tracing
-      - run: cargo test --features cost-tracking,tracing
-      - run: cargo clippy --lib --features cost-tracking,tracing -- -D warnings
+      - run: cargo test --features token-count,cost-tracking
+      - name: every feature on its own
+        run: |
+          for f in reqwest tracing cost-tracking token-count local; do
+            cargo check --no-default-features --features "$f"
+          done
+      - run: cargo clippy --lib --features cost-tracking,tracing,token-count -- -D warnings
 
   lint:
     name: fmt + clippy
@@ -68,7 +74,9 @@ jobs:
           path: ~/.cache/huggingface/hub
           key: hf-models-v1
       - run: cargo test --features local,cost-tracking
+      - run: cargo test --features local --lib wordpiece
       - run: cargo test --release --features local --test local_e2e -- --ignored
+      - run: cargo test --release --features local --lib -- --ignored
 
   audit:
     name: audit + deny

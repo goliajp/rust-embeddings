@@ -68,16 +68,16 @@ async fn run(client: &embedrs::Client, texts: &[String]) -> embedrs::Result<()> 
     let result = client.embed_batch(texts.to_vec()).await?;
     let ms = start.elapsed().as_secs_f64() * 1e3;
     println!(
-        "  {} ({}-dim): {ms:.0} ms for {} texts, {} tokens",
+        "  {} ({}-dim): {ms:.0} ms for {} texts, {:?} tokens",
         result.model,
-        result.embeddings[0].len(),
+        result[0].len(),
         texts.len(),
         result.usage.total_tokens
     );
 
     let lookup = |text: &str| -> &[f32] {
         let i = texts.iter().position(|t| t == text).unwrap();
-        &result.embeddings[i]
+        &result[i]
     };
     metrics::report(&lookup);
 

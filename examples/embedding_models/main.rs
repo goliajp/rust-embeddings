@@ -114,8 +114,8 @@ const LOCAL_MODELS: [&str; 4] = [
 
 async fn embed_all(client: &embedrs::Client, texts: &[String]) -> embedrs::Result<ModelData> {
     let result = client.embed_batch(texts.to_vec()).await?;
-    let dimensions = result.embeddings[0].len();
-    let embeddings = texts.iter().cloned().zip(result.embeddings).collect();
+    let dimensions = result.dim();
+    let embeddings = texts.iter().cloned().zip(result.to_vecs()).collect();
     Ok(ModelData {
         dimensions,
         embeddings,
@@ -194,10 +194,7 @@ async fn record() -> embedrs::Result<()> {
 fn load() -> RecordedData {
     let compressed = std::fs::read(DATA_PATH)
         .unwrap_or_else(|_| panic!("data file not found: {DATA_PATH}\nrun with --record first"));
-    let mut json = Vec::new();
-    let mut decoder = ruzstd::decoding::StreamingDecoder::new(compressed.as_slice())
-        .expect("zstd decoder init failed");
-    std::io::Read::read_to_end(&mut decoder, &mut json).expect("zstd decompression failed");
+    let json = zstd::decode_all(compressed.as_slice()).expect("zstd decompression failed");
     serde_json::from_slice(&json).expect("json parse failed")
 }
 

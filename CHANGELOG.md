@@ -5,6 +5,110 @@ All notable changes to this crate will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Upgrading from 0.6
+
+0.7 is a breaking release. The compiler finds almost every change; the fix for
+each is one line:
+
+| 0.6 | 0.7 |
+|---|---|
+| `result.embeddings[i]` | `result[i]` (a `&[f32]` with `&`), `result.get(i)` |
+| `for v in &result.embeddings` | `for v in result.iter()` |
+| `result.embeddings` as `Vec<Vec<f32>>` | `result.to_vecs()`; without a copy: `result.as_flat()` and `result.dim()`, or `result.into_flat()` |
+| `result.embeddings.len()` | `result.len()` |
+| `usage.total_tokens: u32`, 0 when not reported | `Option<u64>`, `None` when not reported |
+| `usage.cost` only with `cost-tracking` | always there; always `None` without `cost-tracking` |
+| `Usage { .. }` or `EmbedResult { .. }` literals | `Usage::new(tokens, cost)`, `EmbedResult::from_flat(data, dim, model, usage)`; both are `#[non_exhaustive]` |
+| `BackoffConfig { max_http_retries: 5, ..Default::default() }` | `Backoff::new().retries(5)`; also `.base()`, `.max()`, `.jitter()` |
+| `config.delay_for(attempt)` | `backoff.delay(attempt)` |
+| `client.with_retry_backoff(b)`, `.retry_backoff(b)` on a call | `client.with_retry(b)`, `.retry(b)` |
+| `client.with_http_client(c)` (reqwest) | `client.with_transport(Arc::new(ReqwestTransport::from(c)))`, with `c` built from `ReqwestTransport::client_builder()` (it sets up the TLS provider) |
+| `Error::Http(reqwest::Error)` | `Error::Transport(e)`, with `e.kind()` and `e.source()` |
+| `Error::Json(_)` | `Error::Decode(_)` |
+| `Error::InputTooLarge(count, max)` | `Error::TooManyInputs { count, max }` |
+| `Error::Other(_)` | `Error::Unsupported`, `Error::Decode` or `Error::Model`, depending on the cause |
+| `Error::Api { status, message, retry_after, .. }` | the same, plus `provider` |
+| exhaustive `match` on `Error` or `InputType` | add `_ =>`: both are `#[non_exhaustive]`, and `Error` has the same variants under every feature set |
+| `embedrs::client::EmbedResult`, `embedrs::error::Error`, `embedrs::usage::Usage`, `embedrs::similarity::…`, `embedrs::batch::…`, `embedrs::backoff::…` | the crate root: `embedrs::EmbedResult`, … |
+| `embedrs::local::get_model(name)`, `list_models()` | `embedrs::local::models()`, a slice of `ModelInfo` |
+| `ModelDefinition` (`hf_repo`, `hf_filename`, `hidden_size`, `max_seq_length`, `config`) | `ModelInfo` (`repo`, `file`, `dim`, `max_tokens`, `layers`), plus `revision`, `bytes` and `sha256` |
+| `ModelDefinition::tokenizer_data` | removed: the tokenizer is compiled into the crate |
+| `PoolingStrategy::{MeanPooling, ClsToken}` | `Pooling::{Mean, Cls}` |
+| `default-features = false` | leaves the core alone: add `features = ["reqwest"]`, or pass your own transport to `Client::new` |
+
+These compile unchanged: `embedrs::cloud`, `embedrs::local`, `Client::openai`
+and the other constructors, `embed(vec![..]).await`, `embed_batch(..)` and its
+`concurrency`, `chunk_size`, `model`, `dimensions`, `input_type` and `timeout`
+setters, and the similarity functions.
+
+Behaviour that changes without a compile error:
+
+- **A fallback runs only after a transient failure** (408, 429, 500, 502, 503,
+  504, 529, connection errors, timeouts inside the transport). A 400, 401, 403
+  or 422 from the primary is returned at once. 0.6 fell back on every error.
+- **`embed_batch` also splits by tokens** where the provider documents a cap
+  per request: 300,000 for OpenAI, 120,000 for Voyage. Tokens are bounded by
+  the UTF-8 length unless `token-count` is on, so long texts go out in more
+  requests than in 0.6. Voyage requests now hold up to 1000 texts (128 before).
+- **Local weights come from a pinned commit** and are checked against a
+  SHA-256 after download. Files already in the Hugging Face cache at that
+  commit are reused.
+- **Downloading a local model is not under the call's timeout.**
+- A batch in which one request reports no token count has
+  `total_tokens: None`; 0.6 added the others up.
+
+The requests themselves do not change: for every provider, model kind, input
+type and dimension setting that 0.6.2 was recorded with (510 cases), 0.7 sends
+the same bytes. Vectors of local models do not change either.
+
+### Added
+
+- `Transport`: bring your own HTTP client and async runtime. `Client::new`
+  takes an `Endpoint` and any `Arc<dyn Transport>`.
+- `Client::prepare` and `Prepared::finish`: build a request and read its answer
+  without any I/O in embedrs, for blocking HTTP clients or wasm.
+- `Endpoint`: base URL, extra headers, bearer token on or off, and `Limits`.
+  Azure OpenAI and proxies work without a provider of their own.
+- `Embed`, an object-safe trait for code that takes any embedding backend.
+- `embed` and `embed_batch` take `&[&str]`, `&[String]`, `[&str; N]` and `&str`
+  as well as `Vec<String>`.
+- `Truncate`: cut or refuse inputs longer than the model reads, mapped to each
+  provider's switch. Local models, and OpenAI models with `token-count`, refuse
+  before sending with `Error::InputTooLong`.
+- Feature `token-count`: exact OpenAI token counts for batch planning, from
+  tiktoken's `cl100k_base`.
+- `local::LocalModel`: load a model up front, from a file
+  (`LocalModel::from_files`), or embed without an async runtime
+  (`embed_blocking`).
+- `Retry-After` is also read as an HTTP date.
+
+### Changed
+
+- The core has no dependencies. The default build adds reqwest (rustls with
+  ring) and tokio's timer; `serde`, `serde_json`, `thiserror`, `rand` and
+  `futures` are gone. Distinct crates on macOS, this one included: 84 by
+  default (101 in 0.6.2), 1 with `default-features = false`, 201 with `local`
+  (255 in 0.6.2).
+- `local` no longer uses `hf-hub`, `ruzstd` or `candle-transformers`, and links
+  neither onig (C) nor OpenSSL. `candle-core` itself still depends on
+  `tokenizers`, which embedrs does not call.
+- Local inference runs on one worker thread per model instead of tokio's
+  blocking pool, so it needs no runtime.
+- All vectors of a result share one buffer.
+
+### Performance
+
+Measured on an Apple M4 Pro (conditions and peers in the README), 0.6.2 first:
+
+- One local text with default threads, on macOS: 8 words 3.3 → 1.55 ms, 40
+  words 5.9 → 3.07 ms; 180 words 15.8 → 15.4 ms. Batches and one-thread runs
+  are equal to 0.6.2 or up to 8% faster.
+- `embed()` over loopback, 256 vectors of 1536 dimensions: decimal 6.64 →
+  3.87 ms, base64 1.43 → 0.80 ms.
+- Request bodies: 256 texts in 0.015 ms (serde_json 0.024 ms).
+
 ## [0.6.2] - 2026-11-25
 
 ### Upgrading from 0.6.1

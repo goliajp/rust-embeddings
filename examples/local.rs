@@ -2,7 +2,7 @@
 ///
 /// no API key needed — model weights are downloaded from the Hugging Face Hub on first run (91 MB)
 ///
-/// run: cargo run -p embedrs --features local --example local --release
+/// run: cargo run --features local --example local --release
 use embedrs::{cosine_similarity, local};
 
 #[tokio::main]
@@ -22,18 +22,18 @@ async fn main() -> embedrs::Result<()> {
     let result = client.embed(texts.clone()).await?;
 
     println!("model: {}", result.model);
-    println!("dimensions: {}", result.embeddings[0].len());
-    println!("total tokens: {}\n", result.usage.total_tokens);
+    println!("dimensions: {}", result[0].len());
+    println!("total tokens: {:?}\n", result.usage.total_tokens);
 
     // compute pairwise cosine similarity
-    let n = result.embeddings.len();
+    let n = result.len();
     let mut best_sim = f32::NEG_INFINITY;
     let mut best_pair = (0, 0);
 
     println!("pairwise cosine similarity:");
     for i in 0..n {
         for j in (i + 1)..n {
-            let sim = cosine_similarity(&result.embeddings[i], &result.embeddings[j]);
+            let sim = cosine_similarity(&result[i], &result[j]);
             println!("  [{i}] vs [{j}]: {sim:.4}");
             if sim > best_sim {
                 best_sim = sim;
