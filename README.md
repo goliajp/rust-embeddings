@@ -9,7 +9,7 @@
 
 > **Upgrading from 0.6?** 0.7 changes the API: `result.embeddings[i]` is now `result[i]`, errors and backoff have new names, and a fallback runs only after a transient failure. The [migration table](CHANGELOG.md#upgrading-from-06) gives the one-line fix for each. Requests and local vectors are the same as in 0.6.2.
 
-One async Rust client for text embeddings. Six cloud APIs (OpenAI, Cohere, Gemini, Voyage, Jina, Mistral) and four small BERT models that run in-process on the CPU return the same `EmbedResult`, so switching backends is a one-line change. On an Apple M4 Pro, the local `all-MiniLM-L6-v2` runs 1.1–1.7x faster than fastembed (ONNX Runtime) on single texts and 1.3–12x faster on batches of 256, with the same vectors.
+One async Rust client for text embeddings. Six cloud APIs (OpenAI, Cohere, Gemini, Voyage, Jina, Mistral) and four small BERT models that run in-process on the CPU return the same `EmbedResult`, so switching backends is a one-line change. On an Apple M4 Pro with default threads, the local `all-MiniLM-L6-v2` runs 1.5–2.8x faster than fastembed (ONNX Runtime) on single texts and 2.9–7.5x faster on batches of 256, with the same vectors.
 
 ## Features
 
@@ -17,40 +17,55 @@ One async Rust client for text embeddings. Six cloud APIs (OpenAI, Cohere, Gemin
 - **Local inference** (feature `local`): `all-MiniLM-L6-v2`, `all-MiniLM-L12-v2`, `bge-small-en-v1.5`, `gte-small` on [candle](https://github.com/huggingface/candle), pure Rust; on macOS the matrix products go to Apple's Accelerate framework. Texts are sorted by length and padded per group, and truncated at each model's own limit.
 - **Batching**: `embed_batch` splits any number of texts into requests the provider accepts, by count and by tokens, and runs them concurrently. All vectors of a result sit in one buffer.
 - **Retries and fallback**: exponential backoff on 408, 429, 500, 502, 503, 504, 529 and connection errors, honouring `Retry-After` (seconds or a date); a chain of fallback providers for when the retries run out.
-- **Compact transfer**: OpenAI, Voyage and Cohere return base64 vectors, which embedrs decodes itself; a 256-vector response is 2.3x smaller than its decimal form and parses 8.6x faster.
+- **Compact transfer**: OpenAI, Voyage and Cohere return base64 vectors, which embedrs decodes itself; a 256-vector response is 2.3x smaller than its decimal form and parses 7.6x faster.
 - **Cost tracking** (feature `cost-tracking`): estimated USD per request from the [tiktoken](https://crates.io/crates/tiktoken) price table.
 
 - **Few dependencies**: the core has none, with its own JSON, base64, WordPiece and SHA-256 code. The default build adds reqwest (rustls with ring) and tokio's timer: 84 crates on macOS, down from 101 in 0.6.2. With `default-features = false` embedrs is the only crate, and you bring the HTTP client.
 
 ## Performance
 
-Local inference, `all-MiniLM-L6-v2`, on an Apple M4 Pro Mac mini (14 cores, macOS), rustc 1.100, release build with LTO. Peers: [fastembed](https://crates.io/crates/fastembed) 7.8.0 (ONNX Runtime) on the same model, truncating at the same 256 tokens; [model2vec-rs](https://crates.io/crates/model2vec-rs) 0.5.1 with `potion-base-8M`. Vectors from embedrs and fastembed agree to a cosine of 1.000000 on 32 mixed texts. Texts are 8, 40 and 180 words (13, 54 and 232 tokens on average) and a mix of 4 to 200 words. Single texts: median of 200 calls (30 on one thread); batches: 256 texts, median of 3 runs. Load average during the runs: 1.7 to 7.2. "0.6.1" is the previous release's code on the same dependencies.
+Everything here was measured on 2026-11-26 on an Apple M4 Pro Mac mini (14 cores, macOS 27.2.1) with rustc 1.100, release build with LTO, while nothing else was running under the machine's benchmark lock. The one-minute load average was sampled every 15 s: at most 5.5 during the multi-threaded local runs (the benchmark's own threads included), 2.2 while the cloud numbers were taken. Linux was not measured.
 
-| Default threads | 0.6.1 | **embedrs** | fastembed | model2vec |
+### Local inference
+
+`all-MiniLM-L6-v2` against [fastembed](https://crates.io/crates/fastembed) 7.8.0 (ONNX Runtime) on the same model, truncating at the same 256 tokens, and [model2vec-rs](https://crates.io/crates/model2vec-rs) 0.5.1 with `potion-base-8M`. Vectors are bit-for-bit those of 0.6.2 (38 texts, all four models), which agreed with fastembed to a cosine of 1.000000 on 32 mixed texts. Texts are 8, 40 and 180 words (13, 54 and 232 tokens on average) and a mix of 4 to 200 words. Single texts: median of 200 calls (30 on one thread); batches: 256 texts, median of 5 runs.
+
+| Default threads | 0.6.2 | **embedrs** | fastembed | model2vec |
 |---|---|---|---|---|
-| one text, 8 words | 18.7 ms | **3.6 ms** | 4.3 ms | 0.0003 ms |
-| one text, 40 words | 18.7 ms | **6.0 ms** | 8.5 ms | 0.0012 ms |
-| one text, 180 words | 18.8 ms ¹ | **15.9 ms** | 24.6 ms | 0.0051 ms |
-| 256 texts, 8 words | 155 /s | **1,872 /s** | 672 /s | 3.0 M/s |
-| 256 texts, 40 words | 152 /s | **776 /s** | 184 /s | 2.1 M/s |
-| 256 texts, 180 words | 145 /s ¹ | **159 /s** | 22 /s | 1.0 M/s |
-| 256 texts, mixed | 152 /s ¹ | **249 /s** | 21 /s | 0.8 M/s |
+| one text, 8 words | 3.3 ms | **1.55 ms** | 4.3 ms | 0.0003 ms |
+| one text, 40 words | 5.9 ms | **3.07 ms** | 8.1 ms | 0.0012 ms |
+| one text, 180 words | 15.8 ms | **15.4 ms** | 24.0 ms | 0.0050 ms |
+| 256 texts, 8 words | 1,863 /s | **1,930 /s** | 673 /s | 2.7 M/s |
+| 256 texts, 40 words | 750 /s | **800 /s** | 188 /s | 2.3 M/s |
+| 256 texts, 180 words | 158 /s | **162 /s** | 36 /s | 1.1 M/s |
+| 256 texts, mixed | 247 /s | **247 /s** | 33 /s | 1.4 M/s |
 
-| One thread | 0.6.1 | **embedrs** | fastembed | model2vec |
+| One thread | 0.6.2 | **embedrs** | fastembed | model2vec |
 |---|---|---|---|---|
-| one text, 8 words | 39.4 ms | **2.0 ms** | 3.5 ms | 0.0004 ms |
-| one text, 40 words | 39.8 ms | **5.6 ms** | 7.3 ms | 0.0012 ms |
-| one text, 180 words | 40.3 ms ¹ | **23.7 ms** | 26.1 ms | 0.0051 ms |
-| 256 texts, 8 words | 27 /s | **798 /s** | 581 /s | 2.0 M/s |
-| 256 texts, 40 words | 27 /s | **204 /s** | 156 /s | 0.57 M/s |
-| 256 texts, 180 words | 27 /s ¹ | **40 /s** | 21 /s | 0.14 M/s |
-| 256 texts, mixed | 27 /s ¹ | **59 /s** | 12 /s | 0.24 M/s |
+| one text, 8 words | 1.78 ms | **1.64 ms** | 3.50 ms | 0.0004 ms |
+| one text, 40 words | 5.64 ms | **5.37 ms** | 7.31 ms | 0.0012 ms |
+| one text, 180 words | 23.5 ms | **23.2 ms** | 26.1 ms | 0.0051 ms |
+| 256 texts, 8 words | 803 /s | **817 /s** | 575 /s | 2.0 M/s |
+| 256 texts, 40 words | 205 /s | **208 /s** | 157 /s | 0.63 M/s |
+| 256 texts, 180 words | 40 /s | **41 /s** | 26 /s | 0.15 M/s |
+| 256 texts, mixed | 62 /s | **63 /s** | 19 /s | 0.24 M/s |
 
-¹ 0.6.1 cut every text at 128 tokens and padded every text to 128, so on 180-word texts it did about half the work of the other two.
+Short texts are faster than in 0.6.2 because inputs of up to 224 tokens no longer go through the thread pool for layers too small to gain from it (macOS only). model2vec is faster on every row because it is a different kind of model: a static embedding looks each token up in a table and averages, with no transformer layers. It is listed for scale; on quality it is not a replacement for a transformer model. Against fastembed, the gains come from padding each group of texts only to its longest member, Accelerate for the matrix products, and a forward pass that fuses the query, key and value projections.
 
-model2vec is faster on every row because it is a different kind of model: a static embedding looks each token up in a table and averages, with no transformer layers. It is listed for scale; on quality it is not a replacement for a transformer model. Against fastembed, the gains come from padding each group of texts only to its longest member, Accelerate for the matrix products on macOS, and a forward pass that fuses the query, key and value projections. Linux was not measured for this release.
+### Cloud calls
 
-Cloud calls: an in-process mock server on loopback answers with 1536-dimensional OpenAI-shaped responses. For 256 vectors, `embed()` takes 6.85 ms on a decimal body (4.88 MB) and 1.43 ms on a base64 body (2.11 MB), which is what embedrs now asks OpenAI, Voyage and Cohere for; for 2048 vectors, 59.2 ms and 12.1 ms. The rest of the client adds about 0.05 ms per call, against network round trips of tens of milliseconds.
+An in-process mock server on loopback answers with 1536-dimensional OpenAI-shaped responses; the time is the whole `embed()` call (median of 50 calls for 256 vectors, 15 for 2048), so a large part of it is moving the bytes. Peers: [async-openai](https://crates.io/crates/async-openai) 0.43.0 and [rig-core](https://crates.io/crates/rig-core) 0.47.1 (which returns `f64`), given the same bodies. A dash means not measured.
+
+| Response | 0.6.2 | **embedrs** | async-openai | rig-core |
+|---|---|---|---|---|
+| 256 vectors, shortest decimals (4.9 MB) | 6.64 ms | **3.87 ms** | — | — |
+| 256 vectors, 17-digit decimals (8.3 MB) | 9.48 ms | **6.40 ms** | 9.69 ms | 22.0 ms |
+| 256 vectors, base64 (2.1 MB) | 1.43 ms | **0.80 ms** | 1.11 ms | — |
+| 2048 vectors, shortest decimals (39 MB) | 59.6 ms | **32.7 ms** | — | — |
+| 2048 vectors, 17-digit decimals (67 MB) | 80.4 ms | **53.5 ms** | 80.2 ms | 172 ms |
+| 2048 vectors, base64 (17 MB) | 12.1 ms | **7.1 ms** | 9.4 ms | — |
+
+Parsing alone takes 0.49 to 0.62 times as long as serde_json on the decimal bodies (3.0 ms against 6.1 ms for 4.9 MB). The number parser is correctly rounded: it gave the same bits as `str::parse::<f32>` on every finite `f32` printed four ways (17.1 billion strings) and on a billion random ones. For a single vector, `embed()` takes about 0.05 ms, as in 0.6.2 and async-openai; a network round trip takes tens of milliseconds.
 
 ## Installation
 
