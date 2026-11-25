@@ -59,6 +59,7 @@ required-features = ["local"]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
 dotenvy = "0.15"
+proptest = "1"
 # for examples/embedding_models (uses zstd compression when re-recording)
 zstd = "0.14"
 

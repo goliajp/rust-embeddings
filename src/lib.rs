@@ -46,6 +46,8 @@ pub mod backoff;
 pub mod batch;
 pub mod client;
 pub mod error;
+#[cfg_attr(not(test), expect(dead_code, reason = "used by the json reader"))]
+mod json;
 #[cfg(feature = "local")]
 pub mod local;
 pub(crate) mod provider;
