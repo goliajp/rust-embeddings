@@ -83,9 +83,11 @@ fn b64(values: &[f32]) -> String {
 }
 
 fn finite() -> impl Strategy<Value = f32> {
-    any::<u32>()
-        .prop_map(f32::from_bits)
-        .prop_filter("finite", |v| v.is_finite())
+    // clearing the lowest exponent bit makes infinities and nans finite
+    any::<u32>().prop_map(|b| match f32::from_bits(b) {
+        v if v.is_finite() => v,
+        _ => f32::from_bits(b & !(1 << 23)),
+    })
 }
 
 fn ws() -> impl Strategy<Value = &'static str> {
