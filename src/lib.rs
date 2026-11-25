@@ -90,9 +90,9 @@ pub use usage::Usage;
 /// # Ok(())
 /// # }
 /// ```
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", feature = "reqwest"))]
 pub fn local() -> Client {
-    Client::from_local_model(local::default_model())
+    Client::local(local::models()[0].name).expect("the default model is bundled")
 }
 
 /// A client for OpenAI `text-embedding-3-small` (1536 dimensions) over
@@ -128,7 +128,7 @@ mod tests {
         assert_eq!(c.default_model(), "text-embedding-3-small");
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", feature = "reqwest"))]
     #[test]
     fn local_default_and_unknown() {
         assert_eq!(crate::local().default_model(), "all-MiniLM-L6-v2");

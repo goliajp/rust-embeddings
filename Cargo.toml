@@ -22,16 +22,11 @@ tracing = { version = "0.1", optional = true }
 tiktoken = { version = "5.5", optional = true, default-features = false }
 candle-core = { version = "0.11", optional = true }
 candle-nn = { version = "0.11", optional = true }
-candle-transformers = { version = "0.11", optional = true }
-tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
-hf-hub = { version = "0.5", optional = true, features = ["tokio"] }
-ruzstd = { version = "0.9", optional = true }
 
 # apple's accelerate framework ships with macos, so the local backend uses it there
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { version = "0.11", optional = true, features = ["accelerate"] }
 candle-nn = { version = "0.11", optional = true, features = ["accelerate"] }
-candle-transformers = { version = "0.11", optional = true, features = ["accelerate"] }
 
 [features]
 default = ["reqwest"]
@@ -39,7 +34,7 @@ reqwest = ["dep:reqwest", "dep:rustls", "dep:tokio"]
 tracing = ["dep:tracing"]
 cost-tracking = ["dep:tiktoken"]
 token-count = ["dep:tiktoken", "tiktoken/vocab-cl100k_base"]
-local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:hf-hub", "dep:ruzstd", "dep:tokio", "tokio/rt", "tokio/sync"]
+local = ["dep:candle-core", "dep:candle-nn"]
 
 [[example]]
 name = "basic"
@@ -71,6 +66,8 @@ serde = { version = "1", features = ["derive"] }
 proptest = "1"
 # for examples/embedding_models (uses zstd compression when re-recording)
 zstd = "0.14"
+# reference forward pass for the local model test
+candle-transformers = "0.11"
 
 [profile.release]
 lto = true

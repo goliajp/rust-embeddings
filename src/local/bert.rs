@@ -1,13 +1,13 @@
 //! BERT encoder forward pass for the bundled sentence-embedding models.
 //!
-//! Same weights and arithmetic as `candle_transformers::models::bert`, with
+//! Same weights and arithmetic as candle-transformers' BERT, with
 //! the query, key and value projections fused into one matrix product, the
 //! attention scale folded into the query weights, and the fused softmax and
 //! layer-norm kernels.
 
 use candle_core::{DType, Result, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::bert::{Config, HiddenAct};
+use super::model::BertShape;
 
 struct LayerNorm {
     weight: Tensor,
@@ -58,11 +58,11 @@ struct Layer {
 }
 
 impl Layer {
-    fn load(vb: VarBuilder, c: &Config) -> Result<Self> {
-        let h = c.hidden_size;
+    fn load(vb: VarBuilder, c: &BertShape) -> Result<Self> {
+        let h = c.hidden;
         let attn = vb.pp("attention");
         let sa = attn.pp("self");
-        let scale = 1.0 / ((h / c.num_attention_heads) as f64).sqrt();
+        let scale = 1.0 / ((h / c.heads) as f64).sqrt();
         let q = Dense::load(sa.pp("query"), h, h)?;
         let k = Dense::load(sa.pp("key"), h, h)?;
         let v = Dense::load(sa.pp("value"), h, h)?;
@@ -73,10 +73,10 @@ impl Layer {
         Ok(Self {
             qkv,
             attn_out: Dense::load(attn.pp("output").pp("dense"), h, h)?,
-            attn_norm: LayerNorm::load(attn.pp("output").pp("LayerNorm"), h, c.layer_norm_eps)?,
-            ff_in: Dense::load(vb.pp("intermediate").pp("dense"), h, c.intermediate_size)?,
-            ff_out: Dense::load(vb.pp("output").pp("dense"), c.intermediate_size, h)?,
-            ff_norm: LayerNorm::load(vb.pp("output").pp("LayerNorm"), h, c.layer_norm_eps)?,
+            attn_norm: LayerNorm::load(attn.pp("output").pp("LayerNorm"), h, c.eps)?,
+            ff_in: Dense::load(vb.pp("intermediate").pp("dense"), h, c.intermediate)?,
+            ff_out: Dense::load(vb.pp("output").pp("dense"), c.intermediate, h)?,
+            ff_norm: LayerNorm::load(vb.pp("output").pp("LayerNorm"), h, c.eps)?,
         })
     }
 
@@ -126,28 +126,25 @@ pub(crate) struct Bert {
 }
 
 impl Bert {
-    pub(crate) fn load(vb: VarBuilder, c: &Config) -> Result<Self> {
-        if c.hidden_act != HiddenAct::Gelu {
-            candle_core::bail!("only gelu bert models are supported");
-        }
+    pub(crate) fn load(vb: VarBuilder, c: &BertShape) -> Result<Self> {
         let vb = if vb.contains_tensor("embeddings.word_embeddings.weight") {
             vb
         } else {
             vb.pp("bert")
         };
-        let h = c.hidden_size;
+        let h = c.hidden;
         let e = vb.pp("embeddings");
-        let layers = (0..c.num_hidden_layers)
+        let layers = (0..c.layers)
             .map(|i| Layer::load(vb.pp(format!("encoder.layer.{i}")), c))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
-            word: e.get((c.vocab_size, h), "word_embeddings.weight")?,
-            position: e.get((c.max_position_embeddings, h), "position_embeddings.weight")?,
-            token_type: e.get((c.type_vocab_size, h), "token_type_embeddings.weight")?,
-            norm: LayerNorm::load(e.pp("LayerNorm"), h, c.layer_norm_eps)?,
+            word: e.get((c.vocab, h), "word_embeddings.weight")?,
+            position: e.get((c.max_positions, h), "position_embeddings.weight")?,
+            token_type: e.get((c.type_vocab, h), "token_type_embeddings.weight")?,
+            norm: LayerNorm::load(e.pp("LayerNorm"), h, c.eps)?,
             layers,
-            heads: c.num_attention_heads,
-            head_dim: h / c.num_attention_heads,
+            heads: c.heads,
+            head_dim: h / c.heads,
         })
     }
 
@@ -186,54 +183,76 @@ impl Bert {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "reqwest"))]
 mod tests {
     use candle_core::{Device, Tensor};
     use candle_nn::VarBuilder;
-    use candle_transformers::models::bert::BertModel;
+    use candle_transformers::models::bert::{BertModel, Config, HiddenAct, PositionEmbeddingType};
 
     use super::Bert;
-    use crate::local::{download, get_model, list_models};
+    use crate::local::{hub, models, wordpiece};
+
+    fn reference_config(s: &crate::local::model::BertShape) -> Config {
+        Config {
+            vocab_size: s.vocab,
+            hidden_size: s.hidden,
+            num_hidden_layers: s.layers,
+            num_attention_heads: s.heads,
+            intermediate_size: s.intermediate,
+            hidden_act: HiddenAct::Gelu,
+            hidden_dropout_prob: 0.1,
+            max_position_embeddings: s.max_positions,
+            type_vocab_size: s.type_vocab,
+            initializer_range: 0.02,
+            layer_norm_eps: s.eps,
+            pad_token_id: 0,
+            position_embedding_type: PositionEmbeddingType::Absolute,
+            use_cache: true,
+            classifier_dropout: None,
+            model_type: Some("bert".to_string()),
+        }
+    }
 
     // downloads every bundled model (67 to 133 MB each)
-    #[tokio::test]
+    #[test]
     #[ignore]
-    async fn matches_the_candle_reference() {
-        let texts = [
-            "hi",
-            "a somewhat longer sentence about rivers and stones",
-            "",
-        ];
-        for name in list_models() {
-            let def = get_model(name).unwrap();
-            let path = download::ensure_model_file(def.hf_repo, def.hf_filename)
-                .await
+    fn matches_the_candle_reference() {
+        let texts = ["hi", "a somewhat longer sentence about rivers and stones", ""];
+        let transport = crate::transport::ReqwestTransport::shared();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for m in models() {
+            let path = rt
+                .block_on(hub::Hub::from_env().ensure(&m.pinned(), transport.as_ref()))
                 .unwrap();
             // safety: read-only cache blob
             let vb = unsafe {
-                VarBuilder::from_mmaped_safetensors(&[path], candle_core::DType::F32, &Device::Cpu)
-                    .unwrap()
+                VarBuilder::from_mmaped_safetensors(&[path], candle_core::DType::F32, &Device::Cpu).unwrap()
             };
-            let reference = BertModel::load(vb.clone(), &def.config).unwrap();
-            let ours = Bert::load(vb, &def.config).unwrap();
+            let shape = m.shape();
+            let reference = BertModel::load(vb.clone(), &reference_config(&shape)).unwrap();
+            let ours = Bert::load(vb, &shape).unwrap();
 
-            let tok = super::super::inference::load_tokenizer(def).unwrap();
-            let enc = tok.encode_batch(texts.to_vec(), true).unwrap();
-            let len = enc.iter().map(|e| e.len()).max().unwrap();
+            let enc: Vec<Vec<u32>> = texts
+                .iter()
+                .map(|t| {
+                    let mut ids = Vec::new();
+                    wordpiece::get().encode(t, m.max_tokens, &mut ids);
+                    ids
+                })
+                .collect();
+            let len = enc.iter().map(Vec::len).max().unwrap();
             let mut ids = vec![0u32; texts.len() * len];
             let mut mask = vec![0u32; texts.len() * len];
             for (i, e) in enc.iter().enumerate() {
-                ids[i * len..i * len + e.len()].copy_from_slice(e.get_ids());
+                ids[i * len..i * len + e.len()].copy_from_slice(e);
                 mask[i * len..i * len + e.len()].fill(1);
             }
             let ids = Tensor::from_vec(ids, (texts.len(), len), &Device::Cpu).unwrap();
             let mask = Tensor::from_vec(mask, (texts.len(), len), &Device::Cpu).unwrap();
             let types = ids.zeros_like().unwrap();
 
-            let want = reference.forward(&ids, &types, Some(&mask)).unwrap();
-            let got = ours.forward(&ids, Some(&mask)).unwrap();
-            let want = want.to_vec3::<f32>().unwrap();
-            let got = got.to_vec3::<f32>().unwrap();
+            let want = reference.forward(&ids, &types, Some(&mask)).unwrap().to_vec3::<f32>().unwrap();
+            let got = ours.forward(&ids, Some(&mask)).unwrap().to_vec3::<f32>().unwrap();
             let mut worst = 0f32;
             for (i, e) in enc.iter().enumerate() {
                 for t in 0..e.len() {
@@ -242,7 +261,7 @@ mod tests {
                     }
                 }
             }
-            assert!(worst < 1e-4, "{name}: max abs difference {worst}");
+            assert!(worst < 1e-4, "{}: max abs difference {worst}", m.name);
         }
     }
 }

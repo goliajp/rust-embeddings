@@ -56,36 +56,12 @@ pub(crate) mod tests {
     use super::*;
     use std::future::Future;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-    use std::task::{Context, Wake, Waker};
+    use std::sync::Arc;
+    use std::task::Context;
 
     use crate::error::Error;
 
-    struct Flag(Mutex<bool>, std::sync::Condvar);
-    impl Wake for Flag {
-        fn wake(self: Arc<Self>) {
-            *self.0.lock().unwrap() = true;
-            self.1.notify_one();
-        }
-    }
-
-    /// A minimal executor for tests: polls on the calling thread.
-    pub(crate) fn block_on<F: Future>(f: F) -> F::Output {
-        let flag = Arc::new(Flag(Mutex::new(false), std::sync::Condvar::new()));
-        let waker = Waker::from(flag.clone());
-        let mut cx = Context::from_waker(&waker);
-        let mut f = std::pin::pin!(f);
-        loop {
-            if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-                return v;
-            }
-            let mut woken = flag.0.lock().unwrap();
-            while !*woken {
-                woken = flag.1.wait(woken).unwrap();
-            }
-            *woken = false;
-        }
-    }
+    pub(crate) use crate::rt::block_on;
 
     // ready after `polls` polls, waking itself each time
     struct After {

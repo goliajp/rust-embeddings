@@ -194,6 +194,11 @@ pub(crate) async fn run(
     o: &Overrides,
 ) -> Result<EmbedResult> {
     let timeout = o.timeout.unwrap_or(client.defaults.timeout);
+    // a first local call downloads and loads the model; that is not under the timeout
+    #[cfg(feature = "local")]
+    if let Backend::Local(h) = &client.backend {
+        crate::local::prepare(client, h, &plan(client, o, true).model).await?;
+    }
     let work = chain(client, inputs, o);
     #[cfg(feature = "tracing")]
     let work = {
@@ -234,7 +239,7 @@ async fn attempts(client: &Client, p: &Plan, inputs: &Inputs<'_>) -> Result<Embe
     match &client.backend {
         Backend::Cloud(ep) => cloud(client, ep, p, inputs).await,
         #[cfg(feature = "local")]
-        Backend::Local(h) => crate::local::embed(h, p, inputs).await,
+        Backend::Local(h) => crate::local::embed(client, h, p, inputs).await,
     }
 }
 
