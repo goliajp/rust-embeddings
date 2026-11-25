@@ -45,6 +45,7 @@ pub(crate) struct Defaults {
 /// fallbacks. Cheap to clone.
 ///
 /// ```rust,no_run
+/// # #[cfg(feature = "reqwest")]
 /// # async fn run() -> embedrs::Result<()> {
 /// let client = embedrs::Client::openai("sk-...");
 /// let result = client.embed(["hello world"]).await?;

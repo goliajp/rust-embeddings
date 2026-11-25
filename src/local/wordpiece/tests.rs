@@ -16,6 +16,16 @@ const CONFIGS: [(&str, usize); 4] = [
     ("gte_small", 512),
 ];
 
+// the fixtures are not in the published package: from the crates.io source
+// the differential tests have nothing to compare against and skip
+fn have_fixtures() -> bool {
+    let present = std::path::Path::new(FIXTURES).join("tokenizers").is_dir();
+    if !present {
+        eprintln!("tests/fixtures is absent; skipping the differential tokenizer test");
+    }
+    present
+}
+
 fn reference(name: &str, max_len: usize) -> Tokenizer {
     let raw = std::fs::read(format!("{FIXTURES}/tokenizers/{name}.json.zst")).unwrap();
     let json = zstd::decode_all(&raw[..]).unwrap();
@@ -77,6 +87,9 @@ fn check_all(texts: &[String]) -> usize {
 // runs all of them
 #[test]
 fn every_scalar_value() {
+    if !have_fixtures() {
+        return;
+    }
     let stride = env_or("EMBEDRS_WP_STRIDE", 61);
     let chars: Vec<char> = (0..=0x10FFFFu32)
         .step_by(stride)
@@ -115,6 +128,9 @@ fn corpus() -> Vec<String> {
 
 #[test]
 fn fixture_corpus() {
+    if !have_fixtures() {
+        return;
+    }
     let texts = corpus();
     assert!(texts.len() > 1000);
     let mut bad = 0;
@@ -129,6 +145,9 @@ fn fixture_corpus() {
 
 #[test]
 fn truncation_edges() {
+    if !have_fixtures() {
+        return;
+    }
     let wp = super::get();
     let long = "word ".repeat(600);
     let tok = reference("all_minilm_l6_v2", 2);
@@ -197,6 +216,9 @@ fn random_text() -> impl Strategy<Value = String> {
 // EMBEDRS_WP_CASES sets the number of random texts
 #[test]
 fn random_mixed_script() {
+    if !have_fixtures() {
+        return;
+    }
     let cases = env_or("EMBEDRS_WP_CASES", 10_000);
     let config = ProptestConfig {
         cases: cases as u32,
@@ -215,5 +237,34 @@ fn random_mixed_script() {
     eprintln!(
         "random texts checked: {}, mismatches: 0",
         checked.into_inner()
+    );
+}
+
+// the tables were generated with the reference's own pre-tokenizer and
+// lowercasing, which use std's `char::is_whitespace` and `char::to_lowercase`
+// of the toolchain that built the generator; a toolchain with other Unicode
+// data must regenerate them, and this says so
+#[test]
+fn tables_agree_with_this_toolchain_unicode_data() {
+    let mut drift = Vec::new();
+    for c in (0..=0x10FFFFu32).filter_map(char::from_u32) {
+        let code = super::lookup(c);
+        let (kind, class) = (code >> 2, code & 3);
+        let ws = class == super::WS;
+        let lower: Vec<char> = c.to_lowercase().collect();
+        let ok = match kind {
+            super::IDENT => ws == c.is_whitespace() && lower == [c],
+            super::LOWER => lower == [c.to_ascii_lowercase()],
+            _ => true,
+        };
+        if !ok {
+            drift.push(c);
+        }
+    }
+    assert!(
+        drift.is_empty(),
+        "this toolchain's Unicode data disagrees with the wordpiece tables for {} scalar values (first: {:?}); regenerate the tables",
+        drift.len(),
+        &drift[..drift.len().min(10)]
     );
 }

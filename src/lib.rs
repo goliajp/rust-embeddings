@@ -5,6 +5,7 @@
 //! (feature `local`). Every backend returns the same [`EmbedResult`].
 //!
 //! ```rust,no_run
+//! # #[cfg(feature = "reqwest")]
 //! # async fn run() -> embedrs::Result<()> {
 //! let client = embedrs::cloud("sk-...");
 //! let result = client.embed(["hello world"]).await?;

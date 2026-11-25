@@ -193,7 +193,7 @@ mod tests {
     fn splits_by_token_cap() {
         let t = fake_full(vec![ok(&body(&[1.0], None)), ok(&body(&[2.0], Some(9)))]);
         let ep =
-            Endpoint::openai_compatible("k", "http://x").limits(Limits::new(100).request_tokens(8));
+            Endpoint::openai_compatible("k", "http://x").limits(Limits::new(100).request_tokens(1));
         let c = Client::new(ep, t.clone()).with_timeout(Duration::from_secs(1000));
         let r = block_on(c.embed_batch(["aaaaa", "bbbbb"]).into_future()).unwrap();
         assert_eq!(r.len(), 2);

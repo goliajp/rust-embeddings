@@ -8,7 +8,10 @@ mod common;
 use embedrs::{Client, Endpoint, Error, InputType};
 use serde_json::Value;
 
-const FIXTURE: &str = include_str!("fixtures/requests-0.6.2.json");
+const FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/requests-0.6.2.json"
+);
 const BASE: &str = "http://127.0.0.1:PORT/v9";
 
 fn endpoint(provider: &str) -> Endpoint {
@@ -35,7 +38,12 @@ fn input_type(s: &str) -> InputType {
 
 #[test]
 fn every_request_matches_0_6_2() {
-    let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+    // the fixture is not in the published package
+    let Ok(text) = std::fs::read_to_string(FIXTURE) else {
+        eprintln!("{FIXTURE} is absent; skipping");
+        return;
+    };
+    let fixture: Value = serde_json::from_str(&text).unwrap();
     let cases = fixture["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 510);
     let (mut sent, mut refused) = (0, 0);
