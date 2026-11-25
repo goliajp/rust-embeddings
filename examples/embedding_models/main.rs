@@ -194,10 +194,7 @@ async fn record() -> embedrs::Result<()> {
 fn load() -> RecordedData {
     let compressed = std::fs::read(DATA_PATH)
         .unwrap_or_else(|_| panic!("data file not found: {DATA_PATH}\nrun with --record first"));
-    let mut json = Vec::new();
-    let mut decoder = ruzstd::decoding::StreamingDecoder::new(compressed.as_slice())
-        .expect("zstd decoder init failed");
-    std::io::Read::read_to_end(&mut decoder, &mut json).expect("zstd decompression failed");
+    let json = zstd::decode_all(compressed.as_slice()).expect("zstd decompression failed");
     serde_json::from_slice(&json).expect("json parse failed")
 }
 

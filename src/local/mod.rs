@@ -4,6 +4,7 @@ mod bert;
 mod download;
 mod inference;
 mod model;
+mod wordpiece;
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, Weak};

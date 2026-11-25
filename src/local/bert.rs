@@ -193,7 +193,7 @@ mod tests {
     use candle_transformers::models::bert::BertModel;
 
     use super::Bert;
-    use crate::local::{download, get_model, list_models};
+    use crate::local::{download, get_model, list_models, wordpiece};
 
     // downloads every bundled model (67 to 133 MB each)
     #[tokio::test]
@@ -217,13 +217,19 @@ mod tests {
             let reference = BertModel::load(vb.clone(), &def.config).unwrap();
             let ours = Bert::load(vb, &def.config).unwrap();
 
-            let tok = super::super::inference::load_tokenizer(def).unwrap();
-            let enc = tok.encode_batch(texts.to_vec(), true).unwrap();
+            let enc: Vec<Vec<u32>> = texts
+                .iter()
+                .map(|t| {
+                    let mut ids = Vec::new();
+                    wordpiece::get().encode(t, def.max_seq_length, &mut ids);
+                    ids
+                })
+                .collect();
             let len = enc.iter().map(|e| e.len()).max().unwrap();
             let mut ids = vec![0u32; texts.len() * len];
             let mut mask = vec![0u32; texts.len() * len];
             for (i, e) in enc.iter().enumerate() {
-                ids[i * len..i * len + e.len()].copy_from_slice(e.get_ids());
+                ids[i * len..i * len + e.len()].copy_from_slice(e);
                 mask[i * len..i * len + e.len()].fill(1);
             }
             let ids = Tensor::from_vec(ids, (texts.len(), len), &Device::Cpu).unwrap();

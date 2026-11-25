@@ -10,7 +10,7 @@ documentation = "https://docs.rs/embedrs"
 keywords = ["embeddings", "openai", "bert", "rag", "vector"]
 categories = ["api-bindings", "science", "text-processing"]
 readme = "README.md"
-exclude = ["examples/embedding_models/data.json.zst"]
+exclude = ["examples/embedding_models/data.json.zst", "tests/fixtures/"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -26,9 +26,7 @@ tiktoken = { version = "5.4", optional = true, default-features = false }
 candle-core = { version = "0.11", optional = true }
 candle-nn = { version = "0.11", optional = true }
 candle-transformers = { version = "0.11", optional = true }
-tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
 hf-hub = { version = "0.5", optional = true, features = ["tokio"] }
-ruzstd = { version = "0.9", optional = true }
 
 # apple's accelerate framework ships with macos, so the local backend uses it there
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -40,7 +38,7 @@ candle-transformers = { version = "0.11", optional = true, features = ["accelera
 default = []
 tracing = ["dep:tracing"]
 cost-tracking = ["dep:tiktoken"]
-local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:hf-hub", "dep:ruzstd"]
+local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:hf-hub"]
 
 [[example]]
 name = "benchmark"
@@ -59,8 +57,12 @@ required-features = ["local"]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
 dotenvy = "0.15"
-# for examples/embedding_models (uses zstd compression when re-recording)
+# for examples/embedding_models (uses zstd compression when re-recording) and
+# the tokenizer fixtures
 zstd = "0.14"
+# reference for the wordpiece tests
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
+proptest = "1"
 
 [profile.release]
 lto = true

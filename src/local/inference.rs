@@ -2,32 +2,32 @@ use std::sync::Arc;
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use tokenizers::{Tokenizer, TruncationParams};
 
 use super::bert::Bert;
 use super::download;
 use super::model::{ModelDefinition, PoolingStrategy};
+use super::wordpiece;
 use crate::error::{Error, Result};
 
 // texts are sorted by token count and run in groups of this many, so each
 // group is padded only to its own longest text
 const GROUP: usize = 64;
 
-/// A loaded model and its tokenizer.
+/// A loaded model.
 pub(crate) struct InferenceEngine {
     model: Bert,
-    tokenizer: Tokenizer,
+    max_seq_length: usize,
     pooling: PoolingStrategy,
 }
 
 impl InferenceEngine {
-    /// Load the weights (downloading them on first use) and the embedded tokenizer.
+    /// Load the weights, downloading them on first use.
     pub async fn load(def: &ModelDefinition) -> Result<Arc<Self>> {
-        let tokenizer = load_tokenizer(def)?;
         let weights_path = download::ensure_model_file(def.hf_repo, def.hf_filename).await?;
 
         let config = def.config.clone();
         let pooling = def.pooling;
+        let max_seq_length = def.max_seq_length;
         let engine = tokio::task::spawn_blocking(move || -> Result<InferenceEngine> {
             let device = Device::Cpu;
             // safety: the file is a read-only blob in the model cache; it is not
@@ -40,7 +40,7 @@ impl InferenceEngine {
                 .map_err(|e| Error::Other(format!("failed to build model: {e}")))?;
             Ok(InferenceEngine {
                 model,
-                tokenizer,
+                max_seq_length,
                 pooling,
             })
         })
@@ -60,10 +60,15 @@ impl InferenceEngine {
             Some(p) => texts.iter().map(|t| format!("{p}{t}")).collect(),
             None => texts.to_vec(),
         };
-        let encodings = self
-            .tokenizer
-            .encode_batch(inputs, true)
-            .map_err(|e| Error::Other(format!("tokenization failed: {e}")))?;
+        let tokenizer = wordpiece::get();
+        let encodings: Vec<Vec<u32>> = inputs
+            .iter()
+            .map(|text| {
+                let mut ids = Vec::new();
+                tokenizer.encode(text, self.max_seq_length, &mut ids);
+                ids
+            })
+            .collect();
         let total_tokens: u32 = encodings.iter().map(|e| e.len() as u32).sum();
 
         let mut order: Vec<usize> = (0..encodings.len()).collect();
@@ -71,7 +76,7 @@ impl InferenceEngine {
 
         let mut out: Vec<Vec<f32>> = vec![Vec::new(); encodings.len()];
         for group in order.chunks(GROUP) {
-            let batch: Vec<&tokenizers::Encoding> = group.iter().map(|&i| &encodings[i]).collect();
+            let batch: Vec<&[u32]> = group.iter().map(|&i| encodings[i].as_slice()).collect();
             let rows = self.forward(&batch)?;
             for (&i, row) in group.iter().zip(rows) {
                 out[i] = row;
@@ -80,11 +85,13 @@ impl InferenceEngine {
         Ok((out, total_tokens))
     }
 
-    fn forward(&self, batch: &[&tokenizers::Encoding]) -> Result<Vec<Vec<f32>>> {
+    fn forward(&self, batch: &[&[u32]]) -> Result<Vec<Vec<f32>>> {
         let device = Device::Cpu;
         let max_len = batch.iter().map(|e| e.len()).max().unwrap_or(0);
-        let token_ids = padded_tensor(batch, max_len, &device, |e| e.get_ids())?;
-        let attention_mask = padded_tensor(batch, max_len, &device, |e| e.get_attention_mask())?;
+        let token_ids =
+            padded_tensor(batch, max_len, &device, |ids, row| row.copy_from_slice(ids))?;
+        // without padding every real token is attended to
+        let attention_mask = padded_tensor(batch, max_len, &device, |_, row| row.fill(1))?;
         let padded = batch.iter().any(|e| e.len() < max_len);
 
         let output = self
@@ -101,32 +108,16 @@ impl InferenceEngine {
     }
 }
 
-pub(super) fn load_tokenizer(def: &ModelDefinition) -> Result<Tokenizer> {
-    let bytes = decompress_zstd(def.tokenizer_data)?;
-    let mut tokenizer = Tokenizer::from_bytes(&bytes)
-        .map_err(|e| Error::Other(format!("failed to load tokenizer: {e}")))?;
-    // the embedded tokenizer files pad every text to a fixed length; padding is
-    // done per group instead, and truncation follows the model's own limit
-    tokenizer.with_padding(None);
-    tokenizer
-        .with_truncation(Some(TruncationParams {
-            max_length: def.max_seq_length,
-            ..Default::default()
-        }))
-        .map_err(|e| Error::Other(format!("failed to set truncation: {e}")))?;
-    Ok(tokenizer)
-}
-
+// one row per text, zero beyond its length; `fill` writes the text's part
 fn padded_tensor(
-    batch: &[&tokenizers::Encoding],
+    batch: &[&[u32]],
     max_len: usize,
     device: &Device,
-    extract: impl Fn(&tokenizers::Encoding) -> &[u32],
+    fill: impl Fn(&[u32], &mut [u32]),
 ) -> Result<Tensor> {
     let mut flat = vec![0u32; batch.len() * max_len];
-    for (row, e) in flat.chunks_mut(max_len).zip(batch) {
-        let ids = extract(e);
-        row[..ids.len()].copy_from_slice(ids);
+    for (row, ids) in flat.chunks_mut(max_len).zip(batch) {
+        fill(ids, &mut row[..ids.len()]);
     }
     Tensor::from_vec(flat, (batch.len(), max_len), device)
         .map_err(|e| Error::Other(format!("tensor creation failed: {e}")))
@@ -186,83 +177,8 @@ fn l2_normalize(tensor: &Tensor) -> Result<Tensor> {
         .map_err(|e| Error::Other(format!("normalization failed: {e}")))
 }
 
-fn decompress_zstd(data: &[u8]) -> Result<Vec<u8>> {
-    let mut output = Vec::new();
-    let mut decoder = ruzstd::decoding::StreamingDecoder::new(data)
-        .map_err(|e| Error::Other(format!("zstd decoder init failed: {e}")))?;
-    std::io::Read::read_to_end(&mut decoder, &mut output)
-        .map_err(|e| Error::Other(format!("zstd decompression failed: {e}")))?;
-    Ok(output)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn decompress_tokenizer() {
-        let def = super::super::model::get_model("all-MiniLM-L6-v2").unwrap();
-        let bytes = decompress_zstd(def.tokenizer_data).unwrap();
-        // should be valid JSON
-        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(parsed.is_object());
-        // should contain "model" key (wordpiece tokenizer)
-        assert!(parsed.get("model").is_some());
-    }
-
-    #[test]
-    fn decompress_round_trip() {
-        let def = super::super::model::get_model("all-MiniLM-L6-v2").unwrap();
-        let bytes = decompress_zstd(def.tokenizer_data).unwrap();
-        // original tokenizer.json is ~466KB
-        assert!(bytes.len() > 400_000);
-        assert!(bytes.len() < 600_000);
-    }
-
-    #[test]
-    fn decompress_tokenizer_all_minilm_l12_v2() {
-        let def = super::super::model::get_model("all-MiniLM-L12-v2").unwrap();
-        let bytes = decompress_zstd(def.tokenizer_data).unwrap();
-        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(parsed.is_object());
-        assert!(parsed.get("model").is_some());
-    }
-
-    #[test]
-    fn decompress_tokenizer_bge_small_en_v1_5() {
-        let def = super::super::model::get_model("bge-small-en-v1.5").unwrap();
-        let bytes = decompress_zstd(def.tokenizer_data).unwrap();
-        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(parsed.is_object());
-        assert!(parsed.get("model").is_some());
-    }
-
-    #[test]
-    fn decompress_tokenizer_gte_small() {
-        let def = super::super::model::get_model("gte-small").unwrap();
-        let bytes = decompress_zstd(def.tokenizer_data).unwrap();
-        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(parsed.is_object());
-        assert!(parsed.get("model").is_some());
-    }
-
-    #[test]
-    fn all_models_produce_valid_tokenizer() {
-        for name in super::super::model::list_models() {
-            let def = super::super::model::get_model(name).unwrap();
-            let bytes = decompress_zstd(def.tokenizer_data)
-                .unwrap_or_else(|e| panic!("{name} decompression failed: {e}"));
-            let tokenizer = Tokenizer::from_bytes(&bytes)
-                .unwrap_or_else(|e| panic!("{name} tokenizer load failed: {e}"));
-            // tokenizer should be able to encode a simple string
-            let encoding = tokenizer.encode("hello world", true).unwrap();
-            assert!(
-                !encoding.get_ids().is_empty(),
-                "{name} tokenizer produced no tokens"
-            );
-        }
-    }
-
     #[test]
     fn bert_config_values_are_reasonable() {
         for name in super::super::model::list_models() {
@@ -304,12 +220,5 @@ mod tests {
                 "{name} config.hidden_size should match def.hidden_size"
             );
         }
-    }
-
-    #[test]
-    fn decompress_invalid_data_returns_error() {
-        let invalid = b"not zstd data";
-        let result = decompress_zstd(invalid);
-        assert!(result.is_err());
     }
 }

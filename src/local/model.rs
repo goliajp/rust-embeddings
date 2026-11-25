@@ -24,16 +24,9 @@ pub struct ModelDefinition {
     pub hidden_size: usize,
     /// Maximum sequence length.
     pub max_seq_length: usize,
-    /// Compressed tokenizer data (zstd).
-    pub tokenizer_data: &'static [u8],
     /// Pooling strategy.
     pub pooling: PoolingStrategy,
 }
-
-const TOKENIZER_MINILM: &[u8] = include_bytes!("tokenizer_data/all_minilm_l6_v2.json.zst");
-const TOKENIZER_MINILM_L12: &[u8] = include_bytes!("tokenizer_data/all_minilm_l12_v2.json.zst");
-const TOKENIZER_BGE_SMALL: &[u8] = include_bytes!("tokenizer_data/bge_small_en_v1_5.json.zst");
-const TOKENIZER_GTE_SMALL: &[u8] = include_bytes!("tokenizer_data/gte_small.json.zst");
 
 /// shared BERT-small config (384 hidden, 12 heads, vocab 30522)
 fn bert_small_config(num_hidden_layers: usize) -> BertConfig {
@@ -65,7 +58,6 @@ static ALL_MINILM_L6_V2: std::sync::LazyLock<ModelDefinition> =
         config: bert_small_config(6),
         hidden_size: 384,
         max_seq_length: 256,
-        tokenizer_data: TOKENIZER_MINILM,
         pooling: PoolingStrategy::MeanPooling,
     });
 
@@ -77,7 +69,6 @@ static ALL_MINILM_L12_V2: std::sync::LazyLock<ModelDefinition> =
         config: bert_small_config(12),
         hidden_size: 384,
         max_seq_length: 128,
-        tokenizer_data: TOKENIZER_MINILM_L12,
         pooling: PoolingStrategy::MeanPooling,
     });
 
@@ -89,7 +80,6 @@ static BGE_SMALL_EN_V1_5: std::sync::LazyLock<ModelDefinition> =
         config: bert_small_config(12),
         hidden_size: 384,
         max_seq_length: 512,
-        tokenizer_data: TOKENIZER_BGE_SMALL,
         pooling: PoolingStrategy::ClsToken,
     });
 
@@ -101,7 +91,6 @@ static GTE_SMALL: std::sync::LazyLock<ModelDefinition> =
         config: bert_small_config(12),
         hidden_size: 384,
         max_seq_length: 512,
-        tokenizer_data: TOKENIZER_GTE_SMALL,
         pooling: PoolingStrategy::MeanPooling,
     });
 
@@ -150,7 +139,6 @@ mod tests {
         assert_eq!(def.max_seq_length, 256);
         assert_eq!(def.hf_repo, "sentence-transformers/all-MiniLM-L6-v2");
         assert_eq!(def.hf_filename, "model.safetensors");
-        assert!(!def.tokenizer_data.is_empty());
         assert!(matches!(def.pooling, PoolingStrategy::MeanPooling));
     }
 
@@ -183,30 +171,6 @@ mod tests {
         assert_eq!(def.max_seq_length, 512);
         assert_eq!(def.hf_repo, "thenlper/gte-small");
         assert!(matches!(def.pooling, PoolingStrategy::MeanPooling));
-    }
-
-    #[test]
-    fn all_models_have_nonempty_tokenizer_data() {
-        for name in list_models() {
-            let def = get_model(name).expect(name);
-            assert!(
-                !def.tokenizer_data.is_empty(),
-                "{name} has empty tokenizer data"
-            );
-        }
-    }
-
-    #[test]
-    fn all_tokenizer_data_is_zstd() {
-        // zstd magic number: 0x28B52FFD (little-endian)
-        for name in list_models() {
-            let data = get_model(name).unwrap().tokenizer_data;
-            assert!(data.len() > 4, "{name} tokenizer data too short");
-            assert_eq!(data[0], 0x28, "{name} zstd magic[0]");
-            assert_eq!(data[1], 0xB5, "{name} zstd magic[1]");
-            assert_eq!(data[2], 0x2F, "{name} zstd magic[2]");
-            assert_eq!(data[3], 0xFD, "{name} zstd magic[3]");
-        }
     }
 
     #[test]
