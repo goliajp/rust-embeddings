@@ -119,7 +119,7 @@ impl Transport for ReqwestTransport {
         Box::pin(async move {
             let resp = fut.await.map_err(error)?;
             let (status, headers) = head(&resp);
-            let body = resp.bytes().await.map_err(error)?.to_vec();
+            let body = resp.bytes().await.map_err(error)?.into();
             Ok(HttpResponse::new(status, headers, body))
         })
     }

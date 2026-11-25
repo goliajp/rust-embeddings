@@ -285,6 +285,9 @@ mod tests {
         let raw = p(r#"{"data":[{"index":0,"embedding":"AACAPw=="}],"usage":{"total_tokens":1}}"#)
             .unwrap();
         assert_eq!(raw.data, vec![1.0]);
+        // f32::from_le_bytes([255, 255, 127, 63]) encodes to "//9/Pw=="
+        let raw = p(r#"{"data":[{"index":0,"embedding":"\/\/9\/Pw=="}]}"#).unwrap();
+        assert_eq!(raw.data[0].to_bits(), 0x3f7f_ffff);
     }
 
     #[test]

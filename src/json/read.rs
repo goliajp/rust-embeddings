@@ -193,16 +193,19 @@ impl<'a> Cursor<'a> {
             Some(b'"') => {
                 let start = self.pos + 1;
                 let (raw, escaped) = self.str_raw()?;
-                if escaped {
-                    return Err(Fail {
-                        offset: start,
-                        what: "invalid base64 byte",
-                    });
-                }
-                base64::decode_f32_le(raw, out).map_err(|what| Fail {
+                let fail = |what| Fail {
                     offset: start,
                     what,
-                })
+                };
+                // some encoders write '/' as "\/"
+                let plain;
+                let raw = if escaped {
+                    plain = unescape(raw).ok_or(fail("invalid escape in string"))?;
+                    plain.as_bytes()
+                } else {
+                    raw
+                };
+                base64::decode_f32_le(raw, out).map_err(fail)
             }
             Some(b'[') => {
                 let before = out.len();

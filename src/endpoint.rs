@@ -74,7 +74,9 @@ pub struct Limits {
     pub max_inputs: usize,
     /// Tokens per request, when the provider documents a cap.
     pub max_request_tokens: Option<u32>,
-    /// Tokens per input, when the provider documents a cap.
+    /// Tokens per input, when the provider documents a cap. Checked before
+    /// sending for OpenAI models with [`Truncate::Error`](crate::Truncate::Error)
+    /// and the `token-count` feature.
     pub max_input_tokens: Option<u32>,
 }
 

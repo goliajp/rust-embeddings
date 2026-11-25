@@ -1,6 +1,6 @@
 /// similarity: embed texts and find the most similar pair via cosine similarity
 ///
-/// run: cargo run -p embedrs --example similarity
+/// run: cargo run --example similarity
 ///
 /// requires OPENAI_API_KEY in environment or .env.local file
 use embedrs::{cloud, cosine_similarity};

@@ -28,8 +28,9 @@ pub enum Truncate {
     /// without such a switch.
     End,
     /// Refuse long inputs. Sent as Voyage `truncation: false`, Cohere
-    /// `truncate: "NONE"`; OpenAI and Jina refuse by default; local models
-    /// return [`Error::InputTooLong`](crate::Error::InputTooLong) before
+    /// `truncate: "NONE"`; OpenAI and Jina refuse by default; local models,
+    /// and OpenAI models with the `token-count` feature, return
+    /// [`Error::InputTooLong`](crate::Error::InputTooLong) before
     /// running. [`Error::Unsupported`](crate::Error::Unsupported) for
     /// providers that cannot be asked to refuse.
     Error,

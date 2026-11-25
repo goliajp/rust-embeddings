@@ -27,6 +27,8 @@ candle-nn = { version = "0.11", optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { version = "0.11", optional = true, features = ["accelerate"] }
 candle-nn = { version = "0.11", optional = true, features = ["accelerate"] }
+# already in candle's graph; runs short texts on one thread
+rayon = { version = "1", optional = true }
 
 [features]
 default = ["reqwest"]
@@ -34,7 +36,7 @@ reqwest = ["dep:reqwest", "dep:rustls", "dep:tokio"]
 tracing = ["dep:tracing"]
 cost-tracking = ["dep:tiktoken"]
 token-count = ["dep:tiktoken", "tiktoken/vocab-cl100k_base"]
-local = ["dep:candle-core", "dep:candle-nn"]
+local = ["dep:candle-core", "dep:candle-nn", "dep:rayon"]
 
 [[example]]
 name = "basic"
@@ -59,7 +61,6 @@ required-features = ["local", "reqwest"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-wiremock = "0.6"
 dotenvy = "0.15"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }

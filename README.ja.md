@@ -7,7 +7,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | **日本語**
 
-> **0.6.1 からの更新**：API に変更はありません。ローカルモデルは各モデル本来の上限までテキストを読むようになりました（既定のモデルは 128 token から 256 token に変更）。そのため長いテキストのベクトルは変わります。フォールバック先のクライアントは自身のモデルと次元数を使うようになりました。バックエンドが対応していない指定は、無視せずにエラーを返します。詳細は [CHANGELOG](CHANGELOG.md#upgrading-from-061) を参照してください。
+> **0.6 からの移行**：0.7 では API が変わりました。`result.embeddings[i]` は `result[i]` になり、エラー型とバックオフ設定の名前が変わり、フォールバックは一時的な失敗のときだけ動きます。変更箇所ごとの直し方は[移行表](CHANGELOG.md#upgrading-from-06)にあり、どれも 1 行の修正で済みます。送信するリクエストとローカルモデルのベクトルは 0.6.2 と同じです。
 
 embedrs はテキスト埋め込み（embedding）用の非同期 Rust クライアントです。6 社のクラウド API（OpenAI、Cohere、Gemini、Voyage、Jina、Mistral）と、同じプロセスの CPU で動く 4 つの小型 BERT モデルが同じ `EmbedResult` を返すので、バックエンドは 1 行の変更で切り替えられます。Apple M4 Pro での測定では、ローカルの `all-MiniLM-L6-v2` は fastembed（ONNX Runtime）と比べて、1 件ずつの処理で 1.1〜1.7 倍、256 件のバッチで 1.3〜12 倍速く、出力するベクトルは同じです。
 
@@ -15,10 +15,12 @@ embedrs はテキスト埋め込み（embedding）用の非同期 Rust クライ
 
 - **6 社のクラウド API** を 1 つの `Client` で扱う。各社に `*_compatible` コンストラクタがあり、プロキシや互換 API にも接続できる
 - **ローカル推論**（feature `local`）：`all-MiniLM-L6-v2`、`all-MiniLM-L12-v2`、`bge-small-en-v1.5`、`gte-small` を純 Rust の [candle](https://github.com/huggingface/candle) で実行する。macOS では行列積を OS 標準の Accelerate フレームワークで計算する。テキストは長さ順に並べてグループごとにパディングし、モデルごとの上限で切り詰める
-- **バッチ処理**：`embed_batch` は任意の件数のテキストを各社が受け付ける単位のリクエストに分け、並行して送る
-- **リトライとフォールバック**：408、429、500、502、503、504、529 と接続エラーを指数バックオフで再試行し、`Retry-After` に従う。失敗したときは登録順に別のプロバイダーを試す
+- **バッチ処理**：`embed_batch` は任意の件数のテキストを、件数と token 数に応じて各社が受け付ける大きさのリクエストに分け、並行して送る。結果のベクトルはすべて 1 つのバッファに入る
+- **リトライとフォールバック**：408、429、500、502、503、504、529 と接続エラーを指数バックオフで再試行し、`Retry-After`（秒数または日時）に従う。再試行しても失敗したときは、登録順に別のプロバイダーを試す
 - **転送量の削減**：OpenAI、Voyage、Cohere からはベクトルを base64 で受け取り、embedrs 自身でデコードする。256 本のベクトルを返す応答のサイズは 10 進数のテキストで受け取る場合の 2.3 分の 1 になり、解析は 8.6 倍速い
 - **料金の見積もり**（feature `cost-tracking`）：[tiktoken](https://crates.io/crates/tiktoken) の料金表をもとに、リクエストごとの料金を米ドルで見積もる
+
+- **少ない依存**：コアは依存クレートを持たず、JSON、base64、WordPiece、SHA-256 を自前で実装している。既定のビルドで加わるのは reqwest（rustls と ring）と tokio のタイマーだけで、macOS では全部で 84 クレート（0.6.2 は 101）。`default-features = false` なら embedrs だけになり、HTTP クライアントは利用者が用意する
 
 ## 性能
 
@@ -54,18 +56,21 @@ model2vec がどの行でも速いのは、モデルの種類が違うためで�
 
 ```toml
 [dependencies]
-embedrs = "0.6"
+embedrs = "0.7"
 
 # ローカル推論を使う場合
-embedrs = { version = "0.6", features = ["local"] }
+embedrs = { version = "0.7", features = ["local"] }
 ```
 
 | feature | 既定 | 追加される機能 |
 |---|---|---|
-| *（なし）* | 有効 | クライアントと 6 社すべてのクラウド API |
+| `reqwest` | 有効 | HTTP の送受信と、それを使うコンストラクタ（`embedrs::cloud`、`Client::openai` など）|
 | `local` | 無効 | candle によるローカル推論（トークナイザーは同梱、重みは初回使用時にダウンロード）|
 | `cost-tracking` | 無効 | `Usage::cost`。tiktoken の料金表を使う（トークナイザーの語彙はビルドに含まれない）|
+| `token-count` | 無効 | OpenAI の token 数を正確に数え、バッチの分割と長すぎる入力の検出に使う（`cl100k_base` の語彙をビルドに含む）|
 | `tracing` | 無効 | `tracing` crate による span とイベントの出力 |
+
+macOS での依存ツリーのクレート数（embedrs 自身を含む。括弧内は 0.6.2）は、既定で 84（101）、`local` を有効にすると 201（255）、`default-features = false` で 1、`reqwest` なしで `local` だけなら 137 です。`local` の依存はほとんどが candle によるものです。`candle-core` は `tokenizers` に依存していますが、embedrs 自身は使っていません。
 
 ## 使い方
 
@@ -73,18 +78,21 @@ embedrs = { version = "0.6", features = ["local"] }
 async fn run() -> embedrs::Result<()> {
     // クラウド：OpenAI text-embedding-3-small
     let client = embedrs::cloud("sk-...");
-    let result = client.embed(vec!["hello world".into()]).await?;
+    let result = client.embed(["hello world"]).await?;
     println!("{} dimensions", result.dim()); // 1536
+    println!("{:?}", &result[0][..4]); // 最初のベクトル（&[f32]）
 
     // ローカル：all-MiniLM-L6-v2、API キーは不要
     let client = embedrs::local();
-    let result = client.embed(vec!["hello world".into()]).await?;
+    let result = client.embed(["hello world"]).await?;
     println!("{} dimensions", result.dim()); // 384
     Ok(())
 }
 ```
 
-ローカルモデルを初めて使うときは、重みを Hugging Face のキャッシュ（`HF_HOME`、既定は `~/.cache/huggingface`）にダウンロードします。2 回目以降の呼び出しや他のプロセスは、ダウンロード済みの重みを使います。
+`embed` には `Vec<String>`、`&[String]`、`&[&str]`、`&str` の配列、単独の `&str` を渡せます。`result[i]` は `i` 番目のテキストのベクトルです。`result.iter()` で順に取り出せ、`result.as_flat()` はバッファ全体、`result.to_vecs()` は `Vec<Vec<f32>>` へのコピーです。
+
+ローカルモデルを初めて使うときは、重みを Hugging Face のキャッシュ（`HF_HOME`、既定は `~/.cache/huggingface`）にダウンロードします。2 回目以降の呼び出しや他のプロセスは、ダウンロード済みの重みを使います。ダウンロードするのは固定したコミットのファイルで、中断しても続きから再開し、完了後に SHA-256 を検証します。ダウンロードの時間は呼び出しのタイムアウトに含まれません。
 
 ## クラウド API
 
@@ -93,12 +101,12 @@ async fn run() -> embedrs::Result<()> {
 | OpenAI | `Client::openai(key)` | `text-embedding-3-small` | 2048 | `text-embedding-3-*` |
 | Cohere | `Client::cohere(key)` | `embed-v4.0` | 96 | `embed-v4.0`、`embed-v5.0-*`。v3 のモデルはエラー |
 | Gemini | `Client::gemini(key)` | `gemini-embedding-001` | 100 | 128〜3072 |
-| Voyage | `Client::voyage(key)` | `voyage-4-large` | 1000（`embed_batch` は 128 ずつ送信）| 4、3.5、3-large、code-3 系列。それより古いモデルはエラー |
+| Voyage | `Client::voyage(key)` | `voyage-4-large` | 1000 | 4、3.5、3-large、code-3 系列。それより古いモデルはエラー |
 | Jina | `Client::jina(key)` | `jina-embeddings-v3` | 2048 | 対応 |
 | Mistral | `Client::mistral(key)` | `mistral-embed` | 512 | `codestral-embed`。`mistral-embed` はエラー |
 | ローカル | `Client::local(name)?` | `all-MiniLM-L6-v2` | 256 | モデル本来の次元数のみ |
 
-モデル名は任意の文字列なので、新しいモデルも embedrs の更新を待たずに使えます（`client.embed(texts).model("text-embedding-3-large")`）。`cost-tracking` が使う入力 100 万 token あたりの料金は次のとおりです（tiktoken 5.4）。
+モデル名は任意の文字列なので、新しいモデルも embedrs の更新を待たずに使えます（`client.embed(texts).model("text-embedding-3-large")`）。`cost-tracking` が使う入力 100 万 token あたりの料金は次のとおりです（tiktoken 5.5）。
 
 | モデル | 米ドル／100 万 token | モデル | 米ドル／100 万 token |
 |---|---|---|---|
@@ -129,6 +137,23 @@ fn clients() {
 
 `openai_compatible` は、OpenAI 互換のサーバーならどれでも扱える 10 進数のベクトルを要求します。base64 を要求するのは OpenAI 公式のエンドポイントだけです。
 
+Azure OpenAI や、別のヘッダーが必要なゲートウェイには `Endpoint` を使います。
+
+```rust,no_run
+use std::sync::Arc;
+use embedrs::{Client, Endpoint, transport::ReqwestTransport};
+
+fn azure() -> Client {
+    let endpoint = Endpoint::openai_compatible(
+        "",
+        "https://my-resource.openai.azure.com/openai/deployments/emb",
+    )
+    .bearer(false)
+    .header("api-key", "azure-key");
+    Client::new(endpoint, Arc::new(ReqwestTransport::new()))
+}
+```
+
 ## ローカルモデル
 
 | モデル | 層数 | 重みのサイズ | 読み込む上限 | プーリング |
@@ -139,6 +164,8 @@ fn clients() {
 | `gte-small` | 12 | 67 MB | 512 token | 平均 |
 
 どのモデルも L2 正規化した 384 次元のベクトルを返します。入力の種類が `InputType::SearchQuery` のとき、`bge-small-en-v1.5` には学習時と同じクエリ用の指示文を先頭に付けます。ローカルのクライアントでは `.model()` で別のローカルモデルを指定でき、`.dimensions()` は 384 だけを受け付けます。それ以外の値はエラーになります。上限を超えるテキストは切り詰め、`usage.total_tokens` にはモデルが実際に読んだ token 数が入ります。
+
+読み込んだモデルはそれぞれ専用のスレッドで動くため、ローカル推論に非同期ランタイムは要りません。`LocalModel::from_files` は手元の重みファイルを読み込み、`embed_blocking` は計算が終わるまで待って結果を返します。
 
 ## バッチ処理
 
@@ -159,6 +186,8 @@ async fn run() -> embedrs::Result<()> {
 }
 ```
 
+1 つのリクエストには、プロバイダーの件数の上限まで、token 数の上限が公開されている場合はその上限まで（OpenAI は 30 万、Voyage は 12 万）テキストを詰めます。テキストの token 数は UTF-8 のバイト数とみなします。OpenAI のトークナイザーでは、これが実際より少なくなることはありません。`token-count` を有効にすると OpenAI の token 数を正確に数えるので、1 リクエストにより多く詰められます。
+
 ## 入力の種類と次元数
 
 ```rust,no_run
@@ -166,11 +195,11 @@ use embedrs::InputType;
 
 async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
     let docs = client
-        .embed(vec!["Rust is a systems language".into()])
+        .embed(["Rust is a systems language"])
         .input_type(InputType::SearchDocument)
         .await?;
     let query = client
-        .embed(vec!["what is rust".into()])
+        .embed(["what is rust"])
         .input_type(InputType::SearchQuery)
         .dimensions(256)
         .await?;
@@ -180,6 +209,20 @@ async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
 ```
 
 `InputType` には `SearchDocument`、`SearchQuery`、`Classification`、`Clustering` があり、各社の API にはそれぞれの名前で渡します（Cohere は `search_query`、Gemini は `RETRIEVAL_QUERY`、Jina は `retrieval.query` など）。`gemini-embedding-2` にはテキストの接頭辞として渡します。OpenAI と Mistral にはこの指定がないため無視されます。
+
+## 長い入力
+
+```rust,no_run
+use embedrs::Truncate;
+
+async fn run(client: &embedrs::Client, texts: &[String]) -> embedrs::Result<()> {
+    let result = client.embed(texts).truncate(Truncate::Error).await?;
+    println!("{}", result.len());
+    Ok(())
+}
+```
+
+既定の `Truncate::Provider` では、長い入力の扱いはプロバイダーに任せます。Voyage、Cohere、Gemini、ローカルモデルは末尾を切り詰め、OpenAI と Jina はエラーを返します。`Truncate::End` は切り詰めを、`Truncate::Error` は拒否を指定します。プロバイダーにその指定がない場合は `Error::Unsupported` になります。ローカルモデルは計算の前に `Error::InputTooLong` を返し、`token-count` を有効にしていれば OpenAI のモデルも送信前に同じエラーを返します。
 
 ## リトライ、タイムアウト、フォールバック
 
@@ -194,19 +237,40 @@ async fn run() -> embedrs::Result<()> {
         .with_fallback(Client::cohere("cohere-key"))
         .with_fallback(Client::voyage("voyage-key").with_model("voyage-4-lite"));
 
-    let result = client.embed(vec!["hello".into()]).await?;
+    let result = client.embed(["hello"]).await?;
     println!("answered by {}", result.model);
     Ok(())
 }
 ```
 
-`with_retry_backoff` を指定しない場合、失敗したリクエストは再試行しません。主となるプロバイダーが失敗すると、登録順にフォールバック先を試します。フォールバック先はそれぞれ自身のモデルと次元数を使います。すべて失敗した場合は、主となるプロバイダーのエラーを返します。モデルが違うとベクトルは比較できないため、フォールバックは可用性を保つためのものです。1 つのインデックスに複数のモデルのベクトルを混ぜる用途には使えません。
+`with_retry` を指定しない場合、失敗したリクエストは再試行しません。主となるプロバイダーが再試行後も一時的なエラー（上に挙げたステータスコード、または接続できない）で失敗すると、登録順にフォールバック先を試します。フォールバック先はそれぞれ自身のモデルと次元数を使います。すべて失敗した場合は、主となるプロバイダーのエラーを返します。400、401、403、422 はすぐに返すので、API キーの誤りがフォールバックに隠れることはありません。モデルが違うとベクトルは比較できないため、フォールバックは可用性を保つためのものです。1 つのインデックスに複数のモデルのベクトルを混ぜる用途には使えません。
+
+## 自分の HTTP クライアントを使う
+
+```rust,no_run
+use embedrs::{Client, transport::HttpResponse};
+
+fn run(client: &Client) -> embedrs::Result<()> {
+    let prepared = client.prepare(["hello world"])?;
+    let request = prepared.request(); // method, url, headers, body
+    println!("POST {} ({} bytes)", request.url, request.body.len());
+
+    let body = br#"{"data":[{"index":0,"embedding":[0.6,0.8]}]}"#; // HTTP クライアントが受け取った応答
+    let result = prepared.finish(HttpResponse::new(200, vec![], body.to_vec()))?;
+    assert_eq!(&result[0], &[0.6, 0.8]);
+    Ok(())
+}
+```
+
+`prepare` と `finish` は I/O をしないので、同期式のものも含めてどの HTTP クライアントとも組み合わせられます。[`examples/blocking.rs`](examples/blocking.rs) は標準ライブラリの `TcpStream` だけを使い、依存クレートがありません。再試行、フォールバック、バッチ、タイムアウトも使いたい場合は、`Transport`（必須のメソッドはリクエストの送信と待機の 2 つ）を実装して `Client::new` に渡します。embedrs はタスクを起動せず、どのランタイムでも動きます。reqwest の設定（プロキシ、接続プール、ヘッダー）を変えるには、TLS プロバイダーの設定を済ませた `ReqwestTransport::client_builder()` でクライアントを作り、`client.with_transport(Arc::new(ReqwestTransport::from(reqwest_client)))` と書きます。
+
+どの埋め込みバックエンドでも動くコードを書くには、`&dyn embedrs::Embed` を受け取ります。メソッドが 1 つだけのトレイトで、`Client` に実装されています。
 
 ## 料金の見積もり
 
 ```rust,no_run
 async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
-    let result = client.embed(vec!["hello".into()]).await?;
+    let result = client.embed(["hello"]).await?;
     if let Some(cost) = result.usage.cost {
         println!("about ${cost:.8}");
     }
@@ -214,7 +278,7 @@ async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
 }
 ```
 
-モデルが料金表にない場合や、プロバイダーが token 数を返さなかった場合、`cost` は `None` です。
+モデルが料金表にない場合、プロバイダーが token 数を返さなかった場合、`cost-tracking` を有効にしていない場合、`cost` は `None` です。
 
 ## エラー処理
 
@@ -222,7 +286,7 @@ async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
 use embedrs::Error;
 
 async fn run(client: &embedrs::Client) {
-    match client.embed(vec!["hello".into()]).await {
+    match client.embed(["hello"]).await {
         Ok(result) => println!("{} vectors", result.len()),
         Err(Error::Api { status: 429, .. }) => eprintln!("rate limited"),
         Err(Error::Api { status, message, .. }) => eprintln!("API error {status}: {message}"),

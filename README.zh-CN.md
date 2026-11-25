@@ -7,7 +7,7 @@
 
 [English](README.md) | **简体中文** | [日本語](README.ja.md)
 
-> **从 0.6.1 升级**：API 没变。本地模型现在按各自的上限截断文本（默认模型从 128 个 token 改为 256 个），所以较长文本的向量会变；备用客户端改用它自己的模型和维度；后端做不到的选项现在会报错，不再被悄悄忽略。详见 [CHANGELOG](CHANGELOG.md#upgrading-from-061)。
+> **从 0.6 升级**：0.7 的 API 有改动：`result.embeddings[i]` 改成 `result[i]`，错误类型和退避配置换了名字，备用服务只在临时故障时启用。[迁移表](CHANGELOG.md#upgrading-from-06)列出了每一处的改法，都只要改一行。发出的请求和本地模型的向量与 0.6.2 相同。
 
 embedrs 是一个异步的 Rust 文本向量化（embedding）客户端。六家云端 API（OpenAI、Cohere、Gemini、Voyage、Jina、Mistral）和四个在本进程 CPU 上运行的小型 BERT 模型返回同一个 `EmbedResult`，换后端只要改一行。在 Apple M4 Pro 上，本地的 `all-MiniLM-L6-v2` 处理单条文本比 fastembed（ONNX Runtime）快 1.1～1.7 倍，处理 256 条一批的文本快 1.3～12 倍，两者输出的向量相同。
 
@@ -15,10 +15,12 @@ embedrs 是一个异步的 Rust 文本向量化（embedding）客户端。六家
 
 - **六家云端服务**共用一个 `Client`，每家都有 `*_compatible` 构造函数，可以接代理或兼容同一 API 的服务
 - **本地推理**（feature `local`）：`all-MiniLM-L6-v2`、`all-MiniLM-L12-v2`、`bge-small-en-v1.5`、`gte-small`，基于纯 Rust 的 [candle](https://github.com/huggingface/candle)；在 macOS 上矩阵乘法交给系统自带的 Accelerate 框架。文本先按长度排序、分组补齐，再按各模型自己的上限截断
-- **批量**：`embed_batch` 把任意数量的文本拆成服务商能接受的请求，并发发送
-- **重试和备用**：遇到 408、429、500、502、503、504、529 和连接错误时按指数退避重试，遵守 `Retry-After`；主服务失败后依次改用备用服务
+- **批量**：`embed_batch` 把任意数量的文本按条数和 token 数拆成服务商能接受的请求，并发发送。一次调用的所有向量放在同一块内存里
+- **重试和备用**：遇到 408、429、500、502、503、504、529 和连接错误时按指数退避重试，遵守 `Retry-After`（秒数或日期）；重试用完后依次改用备用服务
 - **紧凑传输**：OpenAI、Voyage 和 Cohere 以 base64 返回向量，由 embedrs 自己解码。256 个向量的响应比十进制文本小 2.3 倍，解析快 8.6 倍
 - **费用估算**（feature `cost-tracking`）：按 [tiktoken](https://crates.io/crates/tiktoken) 的价格表估算每次请求的美元费用
+
+- **依赖少**：核心部分不依赖任何第三方库，JSON、base64、WordPiece 和 SHA-256 都是自己实现的。默认构建只加上 reqwest（rustls + ring）和 tokio 的定时器，在 macOS 上共 84 个 crate，0.6.2 是 101 个。设置 `default-features = false` 时只有 embedrs 一个 crate，HTTP 客户端由你提供
 
 ## 性能
 
@@ -54,18 +56,21 @@ model2vec 在每一行都更快，因为它是另一类模型：静态向量模�
 
 ```toml
 [dependencies]
-embedrs = "0.6"
+embedrs = "0.7"
 
 # 本地推理
-embedrs = { version = "0.6", features = ["local"] }
+embedrs = { version = "0.7", features = ["local"] }
 ```
 
-| feature | 默认开启 | 增加的内容 |
+| feature | 默认 | 作用 |
 |---|---|---|
-| *（无）* | 是 | 客户端和全部六家云端服务 |
-| `local` | 否 | 基于 candle 的本地推理（分词器已内置，权重首次使用时下载）|
-| `cost-tracking` | 否 | `Usage::cost`，数据来自 tiktoken 的价格表（不编译任何分词词表）|
-| `tracing` | 否 | 通过 `tracing` crate 输出 span 和事件 |
+| `reqwest` | 开 | HTTP 传输层，以及用到它的构造函数（`embedrs::cloud`、`Client::openai` 等）|
+| `local` | 关 | 用 candle 在本地推理（分词器编译在库里，权重首次使用时下载）|
+| `cost-tracking` | 关 | `Usage::cost`，取自 tiktoken 的价格表（不会编译进任何分词器词表）|
+| `token-count` | 关 | 精确计算 OpenAI 的 token 数，用于拆分批量请求和拒绝超长文本（会编译进 `cl100k_base` 词表）|
+| `tracing` | 关 | 通过 `tracing` crate 输出 span 和事件 |
+
+macOS 上依赖树里的 crate 数（含 embedrs 自己，括号里是 0.6.2）：默认 84（101），开启 `local` 201（255），`default-features = false` 为 1，只开 `local` 不开 `reqwest` 为 137。`local` 的依赖几乎都来自 candle；其中 `candle-core` 会引入 `tokenizers`，embedrs 自己并不使用它。
 
 ## 快速开始
 
@@ -73,18 +78,21 @@ embedrs = { version = "0.6", features = ["local"] }
 async fn run() -> embedrs::Result<()> {
     // 云端：OpenAI text-embedding-3-small
     let client = embedrs::cloud("sk-...");
-    let result = client.embed(vec!["hello world".into()]).await?;
+    let result = client.embed(["hello world"]).await?;
     println!("{} dimensions", result.dim()); // 1536
+    println!("{:?}", &result[0][..4]); // 第一个向量，类型是 &[f32]
 
     // 本地：all-MiniLM-L6-v2，不需要 API key
     let client = embedrs::local();
-    let result = client.embed(vec!["hello world".into()]).await?;
+    let result = client.embed(["hello world"]).await?;
     println!("{} dimensions", result.dim()); // 384
     Ok(())
 }
 ```
 
-第一次本地调用会把权重下载到 Hugging Face 缓存目录（`HF_HOME`，默认 `~/.cache/huggingface`），之后的调用和其他进程直接复用。
+`embed` 接受 `Vec<String>`、`&[String]`、`&[&str]`、`&str` 数组或单个 `&str`。`result[i]` 是第 `i` 条文本的向量；`result.iter()` 逐个遍历，`result.as_flat()` 是整块数据，`result.to_vecs()` 复制成 `Vec<Vec<f32>>`。
+
+第一次本地调用会把权重下载到 Hugging Face 缓存目录（`HF_HOME`，默认 `~/.cache/huggingface`），之后的调用和其他进程直接复用。下载的是固定 commit 的文件，中断后可以续传，下完会校验 SHA-256，下载时间不计入调用的超时。
 
 ## 云端服务
 
@@ -93,12 +101,12 @@ async fn run() -> embedrs::Result<()> {
 | OpenAI | `Client::openai(key)` | `text-embedding-3-small` | 2048 | `text-embedding-3-*` |
 | Cohere | `Client::cohere(key)` | `embed-v4.0` | 96 | `embed-v4.0`、`embed-v5.0-*`；v3 模型报错 |
 | Gemini | `Client::gemini(key)` | `gemini-embedding-001` | 100 | 128 到 3072 |
-| Voyage | `Client::voyage(key)` | `voyage-4-large` | 1000（`embed_batch` 每次发 128）| 4、3.5、3-large、code-3 系列；更早的模型报错 |
+| Voyage | `Client::voyage(key)` | `voyage-4-large` | 1000 | 4、3.5、3-large、code-3 系列；更早的模型报错 |
 | Jina | `Client::jina(key)` | `jina-embeddings-v3` | 2048 | 支持 |
 | Mistral | `Client::mistral(key)` | `mistral-embed` | 512 | `codestral-embed`；`mistral-embed` 报错 |
 | 本地 | `Client::local(name)?` | `all-MiniLM-L6-v2` | 256 | 只能是模型本身的维度 |
 
-模型名是任意字符串，新模型不用等新版本就能用：`client.embed(texts).model("text-embedding-3-large")`。下表是 `cost-tracking` 采用的每百万输入 token 价格（tiktoken 5.4）：
+模型名是任意字符串，新模型不用等新版本就能用：`client.embed(texts).model("text-embedding-3-large")`。下表是 `cost-tracking` 采用的每百万输入 token 价格（tiktoken 5.5）：
 
 | 模型 | 美元／百万 token | 模型 | 美元／百万 token |
 |---|---|---|---|
@@ -129,6 +137,23 @@ fn clients() {
 
 `openai_compatible` 请求十进制向量，所有兼容 OpenAI 的服务都支持这种格式；只有官方地址才请求 base64。
 
+Azure OpenAI 以及需要其他请求头的网关，用 `Endpoint` 配置：
+
+```rust,no_run
+use std::sync::Arc;
+use embedrs::{Client, Endpoint, transport::ReqwestTransport};
+
+fn azure() -> Client {
+    let endpoint = Endpoint::openai_compatible(
+        "",
+        "https://my-resource.openai.azure.com/openai/deployments/emb",
+    )
+    .bearer(false)
+    .header("api-key", "azure-key");
+    Client::new(endpoint, Arc::new(ReqwestTransport::new()))
+}
+```
+
 ## 本地模型
 
 | 模型 | 层数 | 权重大小 | 最多读取 | 池化方式 |
@@ -139,6 +164,8 @@ fn clients() {
 | `gte-small` | 12 | 67 MB | 512 个 token | 平均 |
 
 四个模型都输出 384 维、经过 L2 归一化的向量。输入类型为 `InputType::SearchQuery` 时，`bge-small-en-v1.5` 会在文本前加上它训练时用的查询指令。本地客户端的 `.model()` 可以换成另一个本地模型，`.dimensions()` 只接受 384，其他值都会报错。超长文本会被截断，`usage.total_tokens` 统计的是模型实际读入的 token 数。
+
+每个加载的模型有自己的线程，所以本地推理不需要异步运行时：`LocalModel::from_files` 加载你已有的权重文件，`embed_blocking` 计算完再返回。
 
 ## 批量向量化
 
@@ -159,6 +186,8 @@ async fn run() -> embedrs::Result<()> {
 }
 ```
 
+一个请求装到服务商的条数上限就发出；服务商写明了 token 上限的，到上限也会发出（OpenAI 30 万，Voyage 12 万）。每条文本的 token 数按 UTF-8 字节数计，对 OpenAI 的分词器来说不会少算；开启 `token-count` 后 OpenAI 的计数是精确的，每个请求能装得更满。
+
 ## 输入类型和维度
 
 ```rust,no_run
@@ -166,11 +195,11 @@ use embedrs::InputType;
 
 async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
     let docs = client
-        .embed(vec!["Rust is a systems language".into()])
+        .embed(["Rust is a systems language"])
         .input_type(InputType::SearchDocument)
         .await?;
     let query = client
-        .embed(vec!["what is rust".into()])
+        .embed(["what is rust"])
         .input_type(InputType::SearchQuery)
         .dimensions(256)
         .await?;
@@ -180,6 +209,20 @@ async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
 ```
 
 `InputType` 有 `SearchDocument`、`SearchQuery`、`Classification`、`Clustering` 四种，发给各服务商时换成各自的写法（Cohere 是 `search_query`，Gemini 是 `RETRIEVAL_QUERY`，Jina 是 `retrieval.query`，依此类推）；`gemini-embedding-2` 则以文本前缀的形式传入。OpenAI 和 Mistral 没有这个参数，会忽略它。
+
+## 超长文本
+
+```rust,no_run
+use embedrs::Truncate;
+
+async fn run(client: &embedrs::Client, texts: &[String]) -> embedrs::Result<()> {
+    let result = client.embed(texts).truncate(Truncate::Error).await?;
+    println!("{}", result.len());
+    Ok(())
+}
+```
+
+默认的 `Truncate::Provider` 由服务商决定：Voyage、Cohere、Gemini 和本地模型会截掉末尾，OpenAI 和 Jina 会返回错误。`Truncate::End` 要求截断，`Truncate::Error` 要求拒绝；服务商没有这种开关时返回 `Error::Unsupported`。本地模型在计算前就以 `Error::InputTooLong` 拒绝，OpenAI 模型在开启 `token-count` 时也是如此。
 
 ## 重试、超时和备用服务
 
@@ -194,19 +237,40 @@ async fn run() -> embedrs::Result<()> {
         .with_fallback(Client::cohere("cohere-key"))
         .with_fallback(Client::voyage("voyage-key").with_model("voyage-4-lite"));
 
-    let result = client.embed(vec!["hello".into()]).await?;
+    let result = client.embed(["hello"]).await?;
     println!("answered by {}", result.model);
     Ok(())
 }
 ```
 
-不调用 `with_retry_backoff` 时，请求失败不会重试。主服务失败后，按顺序尝试各个备用服务，每个都用自己的模型和维度；全部失败时返回主服务的错误。不同模型的向量不能互相比较，所以备用服务只用来保证可用，不要用它往同一个索引里写入不同模型的向量。
+不调用 `with_retry` 时，请求失败不会重试。主服务重试后仍然是临时故障（上面列出的状态码，或者连不上），就按顺序尝试各个备用服务，每个都用自己的模型和维度；全部失败时返回主服务的错误。400、401、403、422 会立即返回，所以密钥写错不会被备用服务掩盖。不同模型的向量不能互相比较，所以备用服务只用来保证可用，不要用它往同一个索引里写入不同模型的向量。
+
+## 使用自己的 HTTP 客户端
+
+```rust,no_run
+use embedrs::{Client, transport::HttpResponse};
+
+fn run(client: &Client) -> embedrs::Result<()> {
+    let prepared = client.prepare(["hello world"])?;
+    let request = prepared.request(); // method, url, headers, body
+    println!("POST {} ({} bytes)", request.url, request.body.len());
+
+    let body = br#"{"data":[{"index":0,"embedding":[0.6,0.8]}]}"#; // 你的 HTTP 客户端收到的响应
+    let result = prepared.finish(HttpResponse::new(200, vec![], body.to_vec()))?;
+    assert_eq!(&result[0], &[0.6, 0.8]);
+    Ok(())
+}
+```
+
+`prepare` 和 `finish` 不做任何 I/O，所以什么 HTTP 客户端都能用，包括阻塞式的；[`examples/blocking.rs`](examples/blocking.rs) 直接用标准库的 `TcpStream`，没有任何依赖。如果还要用重试、备用服务、批量和超时，就实现 `Transport`（必须实现的方法只有两个：发送请求和等待一段时间），传给 `Client::new`。embedrs 不会启动任务，也不限定用哪个运行时。要自己配置 reqwest（代理、连接池、请求头），先用 `ReqwestTransport::client_builder()` 构建客户端（它会设置好 TLS provider），再写 `client.with_transport(Arc::new(ReqwestTransport::from(reqwest_client)))`。
+
+想让代码支持任意向量化后端，可以接收 `&dyn embedrs::Embed`，这个 trait 只有一个方法，`Client` 已经实现了它。
 
 ## 费用估算
 
 ```rust,no_run
 async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
-    let result = client.embed(vec!["hello".into()]).await?;
+    let result = client.embed(["hello"]).await?;
     if let Some(cost) = result.usage.cost {
         println!("about ${cost:.8}");
     }
@@ -214,7 +278,7 @@ async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
 }
 ```
 
-模型不在价格表里，或服务商没有返回 token 数时，`cost` 为 `None`。
+模型不在价格表里、服务商没有返回 token 数，或者没有开启 `cost-tracking` 时，`cost` 为 `None`。
 
 ## 错误处理
 
@@ -222,7 +286,7 @@ async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
 use embedrs::Error;
 
 async fn run(client: &embedrs::Client) {
-    match client.embed(vec!["hello".into()]).await {
+    match client.embed(["hello"]).await {
         Ok(result) => println!("{} vectors", result.len()),
         Err(Error::Api { status: 429, .. }) => eprintln!("rate limited"),
         Err(Error::Api { status, message, .. }) => eprintln!("API error {status}: {message}"),

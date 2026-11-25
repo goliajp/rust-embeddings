@@ -122,7 +122,7 @@ impl<'c, 't> EmbedBuilder<'c, 't> {
                 "prepare (local models run in-process)",
             ));
         };
-        check_count(self.inputs.len(), ep.limits.max_inputs)?;
+        check(ep, &p, &self.inputs)?;
         let request = wire::build(ep, &call(&p, &self.inputs))?;
         Ok(Prepared {
             request,
@@ -174,10 +174,26 @@ fn call<'a>(p: &'a Plan, inputs: &'a Inputs<'a>) -> Call<'a> {
     }
 }
 
-fn check_count(count: usize, max: usize) -> Result<()> {
+/// Refuse what the endpoint would refuse, before sending.
+fn check(ep: &Endpoint, p: &Plan, inputs: &Inputs<'_>) -> Result<()> {
+    let (count, max) = (inputs.len(), ep.limits.max_inputs);
     if count > max {
         return Err(Error::TooManyInputs { count, max });
     }
+    #[cfg(feature = "token-count")]
+    if p.truncate == Truncate::Error
+        && let Some(max) = ep.limits.max_input_tokens
+        && crate::plan::counts_exactly(ep.wire, &p.model)
+    {
+        for (index, text) in inputs.iter().enumerate() {
+            let tokens = u32::try_from(crate::plan::count(text)).unwrap_or(u32::MAX);
+            if tokens > max {
+                return Err(Error::InputTooLong { index, tokens, max });
+            }
+        }
+    }
+    #[cfg(not(feature = "token-count"))]
+    let _ = p;
     Ok(())
 }
 
@@ -249,7 +265,7 @@ async fn cloud(
     p: &Plan,
     inputs: &Inputs<'_>,
 ) -> Result<EmbedResult> {
-    check_count(inputs.len(), ep.limits.max_inputs)?;
+    check(ep, p, inputs)?;
     let req = wire::build(ep, &call(p, inputs))?;
     let transport = client
         .transport
@@ -464,6 +480,38 @@ pub(crate) mod tests {
         let e = block_on(c.embed(&texts).into_future()).unwrap_err();
         assert!(matches!(e, Error::TooManyInputs { count: 97, max: 96 }));
         assert!(t.sent.lock().unwrap().is_empty());
+    }
+
+    #[cfg(feature = "token-count")]
+    #[test]
+    fn long_openai_inputs_are_refused_before_sending() {
+        let ep = Endpoint::openai("k").limits(crate::Limits::new(3).input_tokens(3));
+        let three = r#"{"data":[{"embedding":[1]},{"embedding":[2]},{"embedding":[3]}]}"#;
+        let c = Client::new(ep, fake(vec![ok(three)])).with_truncate(Truncate::Error);
+        let long = "one two three four five";
+        let e = c.prepare(["one", long]).unwrap_err();
+        assert!(matches!(
+            e,
+            Error::InputTooLong {
+                index: 1,
+                tokens: 5,
+                max: 3
+            }
+        ));
+        // other tokenizers are not counted
+        assert!(c.embed([long]).model("my-model").prepare().is_ok());
+        assert!(
+            c.embed([long])
+                .truncate(Truncate::Provider)
+                .prepare()
+                .is_ok()
+        );
+        let e = block_on(
+            c.embed_batch(["a", "b", "c", long])
+                .chunk_size(3)
+                .into_future(),
+        );
+        assert!(matches!(e, Err(Error::InputTooLong { index: 3, .. })));
     }
 
     #[test]

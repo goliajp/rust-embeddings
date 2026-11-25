@@ -16,9 +16,18 @@ use crate::error::{Error, Result};
 // group is padded only to its own longest text
 const GROUP: usize = 64;
 
+// up to this many positions (texts x padded length) the softmax and
+// layer-norm kernels are faster on one thread than handed to rayon's pool:
+// measured with accelerate on an m4 pro, where the matrix products do not
+// use rayon; elsewhere they do, and one thread would slow them down
+#[cfg(target_os = "macos")]
+const SERIAL_POSITIONS: usize = 224;
+
 pub(crate) struct Engine {
     model: Bert,
     info: &'static ModelInfo,
+    #[cfg(target_os = "macos")]
+    serial: rayon::ThreadPool,
 }
 
 fn tensor_err(what: &'static str) -> impl Fn(candle_core::Error) -> Error {
@@ -34,7 +43,18 @@ impl Engine {
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights], DType::F32, &device) }
             .map_err(tensor_err("cannot load the weights"))?;
         let model = Bert::load(vb, &info.shape()).map_err(tensor_err("cannot build the model"))?;
-        Ok(Self { model, info })
+        #[cfg(target_os = "macos")]
+        let serial = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .thread_name(move |_| format!("embedrs-{}-short", info.name))
+            .build()
+            .map_err(|e| fail(format!("cannot start the short-text thread: {e}")))?;
+        Ok(Self {
+            model,
+            info,
+            #[cfg(target_os = "macos")]
+            serial,
+        })
     }
 
     /// Token ids of every text, cut at the model's limit, or `InputTooLong`
@@ -93,12 +113,23 @@ impl Engine {
         let mut out = vec![0f32; ids.len() * dim];
         for group in order.chunks(GROUP) {
             let batch: Vec<&[u32]> = group.iter().map(|&i| ids[i].as_slice()).collect();
-            let rows = self.forward(&batch)?;
+            let rows = self.run(&batch)?;
             for (k, &i) in group.iter().enumerate() {
                 out[i * dim..(i + 1) * dim].copy_from_slice(&rows[k * dim..(k + 1) * dim]);
             }
         }
         Ok((out, total))
+    }
+
+    fn run(&self, batch: &[&[u32]]) -> Result<Vec<f32>> {
+        #[cfg(target_os = "macos")]
+        {
+            let longest = batch.iter().map(|e| e.len()).max().unwrap_or(0);
+            if batch.len() * longest <= SERIAL_POSITIONS {
+                return self.serial.install(|| self.forward(batch));
+            }
+        }
+        self.forward(batch)
     }
 
     fn forward(&self, batch: &[&[u32]]) -> Result<Vec<f32>> {

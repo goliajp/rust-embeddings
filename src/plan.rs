@@ -50,8 +50,7 @@ pub(crate) fn split(
 pub(crate) fn tokens(wire: Wire, text: &str) -> u64 {
     #[cfg(feature = "token-count")]
     {
-        let bpe = tiktoken::get_encoding("cl100k_base").expect("cl100k_base is compiled in");
-        let n = bpe.count(text) as u64;
+        let n = count(text);
         if wire == Wire::OpenAi {
             n
         } else {
@@ -63,6 +62,20 @@ pub(crate) fn tokens(wire: Wire, text: &str) -> u64 {
         let _ = wire;
         text.len() as u64
     }
+}
+
+/// The `cl100k_base` token count of `text`.
+#[cfg(feature = "token-count")]
+pub(crate) fn count(text: &str) -> u64 {
+    let bpe = tiktoken::get_encoding("cl100k_base").expect("cl100k_base is compiled in");
+    bpe.count(text) as u64
+}
+
+/// Whether [`count`] is what the model itself counts.
+#[cfg(feature = "token-count")]
+pub(crate) fn counts_exactly(wire: Wire, model: &str) -> bool {
+    wire == Wire::OpenAi
+        && (model.starts_with("text-embedding-3-") || model == "text-embedding-ada-002")
 }
 
 #[cfg(test)]

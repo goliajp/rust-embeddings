@@ -2,7 +2,7 @@
 ///
 /// no API key needed — model weights are downloaded from the Hugging Face Hub on first run (91 MB)
 ///
-/// run: cargo run -p embedrs --features local --example local --release
+/// run: cargo run --features local --example local --release
 use embedrs::{cosine_similarity, local};
 
 #[tokio::main]

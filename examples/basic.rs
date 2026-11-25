@@ -1,6 +1,6 @@
 /// basic: embed texts with OpenAI and display usage stats
 ///
-/// run: cargo run -p embedrs --example basic
+/// run: cargo run --example basic
 ///
 /// requires OPENAI_API_KEY in environment or .env.local file
 use embedrs::{EmbedResult, cloud};

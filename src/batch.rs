@@ -4,7 +4,7 @@
 use std::future::IntoFuture;
 
 use crate::client::{Backend, Client};
-use crate::error::{DecodeError, Result};
+use crate::error::{DecodeError, Error, Result};
 use crate::input::{InputType, Inputs, Truncate};
 use crate::plan;
 use crate::request::{Overrides, run, setters};
@@ -85,15 +85,26 @@ impl<'c, 't> BatchBuilder<'c, 't> {
                 Usage::new(Some(0), None),
             ));
         }
-        let parts: Vec<Inputs<'_>> = self
+        let parts: Vec<(usize, Inputs<'_>)> = self
             .ranges()
             .into_iter()
-            .map(|r| self.inputs.slice(r))
+            .map(|r| (r.start, self.inputs.slice(r)))
             .collect();
         let (client, o) = (self.client, &self.o);
         let futs: Vec<BoxFuture<'_, Result<EmbedResult>>> = parts
             .iter()
-            .map(|part| Box::pin(run(client, part, o)) as BoxFuture<'_, _>)
+            .map(|(start, part)| {
+                Box::pin(async move {
+                    run(client, part, o).await.map_err(|e| match e {
+                        Error::InputTooLong { index, tokens, max } => Error::InputTooLong {
+                            index: start + index,
+                            tokens,
+                            max,
+                        },
+                        e => e,
+                    })
+                }) as BoxFuture<'_, _>
+            })
             .collect();
         let results = crate::rt::join::ordered(futs, self.concurrency).await?;
         merge(results, client.provider())

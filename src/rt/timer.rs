@@ -112,6 +112,15 @@ impl Future for Sleep {
     }
 }
 
+impl Drop for Sleep {
+    fn drop(&mut self) {
+        // the heap keeps the entry until its deadline; do not keep the task alive with it
+        if let Some(slot) = &self.slot {
+            slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

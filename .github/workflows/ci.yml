@@ -76,6 +76,7 @@ jobs:
       - run: cargo test --features local,cost-tracking
       - run: cargo test --features local --lib wordpiece
       - run: cargo test --release --features local --test local_e2e -- --ignored
+      - run: cargo test --release --features local --lib -- --ignored
 
   audit:
     name: audit + deny

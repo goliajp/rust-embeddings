@@ -7,7 +7,7 @@
 
 **English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-> **Upgrading from 0.6.1?** No API change. Local models now read texts up to their own limit (256 tokens for the default model, was 128), so vectors of longer texts change; a fallback client now uses its own model and dimensions; options a backend cannot honour return an error instead of being ignored. Details: [CHANGELOG](CHANGELOG.md#upgrading-from-061).
+> **Upgrading from 0.6?** 0.7 changes the API: `result.embeddings[i]` is now `result[i]`, errors and backoff have new names, and a fallback runs only after a transient failure. The [migration table](CHANGELOG.md#upgrading-from-06) gives the one-line fix for each. Requests and local vectors are the same as in 0.6.2.
 
 One async Rust client for text embeddings. Six cloud APIs (OpenAI, Cohere, Gemini, Voyage, Jina, Mistral) and four small BERT models that run in-process on the CPU return the same `EmbedResult`, so switching backends is a one-line change. On an Apple M4 Pro, the local `all-MiniLM-L6-v2` runs 1.1–1.7x faster than fastembed (ONNX Runtime) on single texts and 1.3–12x faster on batches of 256, with the same vectors.
 
@@ -15,10 +15,12 @@ One async Rust client for text embeddings. Six cloud APIs (OpenAI, Cohere, Gemin
 
 - **Six cloud providers** behind one `Client`, each with a `*_compatible` constructor for proxies and API-compatible servers.
 - **Local inference** (feature `local`): `all-MiniLM-L6-v2`, `all-MiniLM-L12-v2`, `bge-small-en-v1.5`, `gte-small` on [candle](https://github.com/huggingface/candle), pure Rust; on macOS the matrix products go to Apple's Accelerate framework. Texts are sorted by length and padded per group, and truncated at each model's own limit.
-- **Batching**: `embed_batch` splits any number of texts into requests the provider accepts and runs them concurrently.
-- **Retries and fallback**: exponential backoff on 408, 429, 500, 502, 503, 504, 529 and connection errors, honouring `Retry-After`; a chain of fallback providers.
+- **Batching**: `embed_batch` splits any number of texts into requests the provider accepts, by count and by tokens, and runs them concurrently. All vectors of a result sit in one buffer.
+- **Retries and fallback**: exponential backoff on 408, 429, 500, 502, 503, 504, 529 and connection errors, honouring `Retry-After` (seconds or a date); a chain of fallback providers for when the retries run out.
 - **Compact transfer**: OpenAI, Voyage and Cohere return base64 vectors, which embedrs decodes itself; a 256-vector response is 2.3x smaller than its decimal form and parses 8.6x faster.
 - **Cost tracking** (feature `cost-tracking`): estimated USD per request from the [tiktoken](https://crates.io/crates/tiktoken) price table.
+
+- **Few dependencies**: the core has none, with its own JSON, base64, WordPiece and SHA-256 code. The default build adds reqwest (rustls with ring) and tokio's timer: 84 crates on macOS, down from 101 in 0.6.2. With `default-features = false` embedrs is the only crate, and you bring the HTTP client.
 
 ## Performance
 
@@ -54,18 +56,21 @@ Cloud calls: an in-process mock server on loopback answers with 1536-dimensional
 
 ```toml
 [dependencies]
-embedrs = "0.6"
+embedrs = "0.7"
 
 # local inference
-embedrs = { version = "0.6", features = ["local"] }
+embedrs = { version = "0.7", features = ["local"] }
 ```
 
 | Feature | Default | What it adds |
 |---|---|---|
-| *(none)* | yes | The client and all six cloud providers |
-| `local` | no | Local inference with candle (tokenizers embedded; weights downloaded on first use) |
+| `reqwest` | yes | The HTTP transport and the constructors that use it (`embedrs::cloud`, `Client::openai`, …) |
+| `local` | no | Local inference with candle (the tokenizer is compiled in; weights are downloaded on first use) |
 | `cost-tracking` | no | `Usage::cost`, from tiktoken's price table (no tokenizer vocabularies are compiled in) |
+| `token-count` | no | Exact OpenAI token counts for planning batches and refusing long inputs (compiles in `cl100k_base`) |
 | `tracing` | no | Spans and events through the `tracing` crate |
+
+Crates in the dependency tree on macOS, embedrs included (0.6.2 in parentheses): default 84 (101), `local` 201 (255), `default-features = false` 1, `local` without `reqwest` 137. The `local` count is nearly all candle; `candle-core` pulls in the `tokenizers` crate, which embedrs itself does not use.
 
 ## Quick start
 
@@ -73,18 +78,21 @@ embedrs = { version = "0.6", features = ["local"] }
 async fn run() -> embedrs::Result<()> {
     // cloud: OpenAI text-embedding-3-small
     let client = embedrs::cloud("sk-...");
-    let result = client.embed(vec!["hello world".into()]).await?;
+    let result = client.embed(["hello world"]).await?;
     println!("{} dimensions", result.dim()); // 1536
+    println!("{:?}", &result[0][..4]); // the first vector, a &[f32]
 
     // local: all-MiniLM-L6-v2, no API key
     let client = embedrs::local();
-    let result = client.embed(vec!["hello world".into()]).await?;
+    let result = client.embed(["hello world"]).await?;
     println!("{} dimensions", result.dim()); // 384
     Ok(())
 }
 ```
 
-The first local call downloads the weights into the Hugging Face cache (`HF_HOME`, default `~/.cache/huggingface`); later calls and other processes reuse them.
+`embed` takes a `Vec<String>`, `&[String]`, `&[&str]`, an array of `&str` or one `&str`. `result[i]` is the vector of input `i`; `result.iter()` walks them, `result.as_flat()` is the whole buffer and `result.to_vecs()` copies it into a `Vec<Vec<f32>>`.
+
+The first local call downloads the weights into the Hugging Face cache (`HF_HOME`, default `~/.cache/huggingface`); later calls and other processes reuse them. The download is pinned to a commit, resumes after an interruption, is checked against its SHA-256 and does not count against the call's timeout.
 
 ## Providers
 
@@ -93,12 +101,12 @@ The first local call downloads the weights into the Hugging Face cache (`HF_HOME
 | OpenAI | `Client::openai(key)` | `text-embedding-3-small` | 2048 | `text-embedding-3-*` |
 | Cohere | `Client::cohere(key)` | `embed-v4.0` | 96 | `embed-v4.0`, `embed-v5.0-*`; error on v3 models |
 | Gemini | `Client::gemini(key)` | `gemini-embedding-001` | 100 | 128 to 3072 |
-| Voyage | `Client::voyage(key)` | `voyage-4-large` | 1000 (`embed_batch` sends 128) | 4, 3.5, 3-large and code-3 families; error on older models |
+| Voyage | `Client::voyage(key)` | `voyage-4-large` | 1000 | 4, 3.5, 3-large and code-3 families; error on older models |
 | Jina | `Client::jina(key)` | `jina-embeddings-v3` | 2048 | yes |
 | Mistral | `Client::mistral(key)` | `mistral-embed` | 512 | `codestral-embed`; error on `mistral-embed` |
 | Local | `Client::local(name)?` | `all-MiniLM-L6-v2` | 256 | only the model's own width |
 
-The model is a free-form string, so a new model id works without a new release: `client.embed(texts).model("text-embedding-3-large")`. Prices per 1M input tokens, as `cost-tracking` reports them (tiktoken 5.4):
+The model is a free-form string, so a new model id works without a new release: `client.embed(texts).model("text-embedding-3-large")`. Prices per 1M input tokens, as `cost-tracking` reports them (tiktoken 5.5):
 
 | Model | USD / 1M tokens | Model | USD / 1M tokens |
 |---|---|---|---|
@@ -129,6 +137,23 @@ fn clients() {
 
 `openai_compatible` asks for decimal vectors, which every OpenAI-compatible server understands; only the official endpoint is asked for base64.
 
+Azure OpenAI and gateways that want other headers go through `Endpoint`:
+
+```rust,no_run
+use std::sync::Arc;
+use embedrs::{Client, Endpoint, transport::ReqwestTransport};
+
+fn azure() -> Client {
+    let endpoint = Endpoint::openai_compatible(
+        "",
+        "https://my-resource.openai.azure.com/openai/deployments/emb",
+    )
+    .bearer(false)
+    .header("api-key", "azure-key");
+    Client::new(endpoint, Arc::new(ReqwestTransport::new()))
+}
+```
+
 ## Local models
 
 | Model | Layers | Weights | Reads up to | Pooling |
@@ -139,6 +164,8 @@ fn clients() {
 | `gte-small` | 12 | 67 MB | 512 tokens | mean |
 
 All four produce 384-dimensional, L2-normalised vectors. `bge-small-en-v1.5` prepends its query instruction when the input type is `InputType::SearchQuery`. A local client accepts `.model()` with another local model id, and `.dimensions(384)`; anything else is an error. Longer texts are truncated, and `usage.total_tokens` counts the tokens the model read.
+
+Each loaded model runs on its own thread, so local inference needs no async runtime: `LocalModel::from_files` loads weights you already have, and `embed_blocking` embeds and waits.
 
 ## Batch embedding
 
@@ -159,6 +186,8 @@ async fn run() -> embedrs::Result<()> {
 }
 ```
 
+A request is closed when it reaches the provider's limit of texts, or of tokens where the provider documents one (300,000 for OpenAI, 120,000 for Voyage). A text is taken to have as many tokens as it has UTF-8 bytes, which for OpenAI's tokenizer is never too few; with `token-count` the OpenAI count is exact and the requests are fuller.
+
 ## Input type and dimensions
 
 ```rust,no_run
@@ -166,11 +195,11 @@ use embedrs::InputType;
 
 async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
     let docs = client
-        .embed(vec!["Rust is a systems language".into()])
+        .embed(["Rust is a systems language"])
         .input_type(InputType::SearchDocument)
         .await?;
     let query = client
-        .embed(vec!["what is rust".into()])
+        .embed(["what is rust"])
         .input_type(InputType::SearchQuery)
         .dimensions(256)
         .await?;
@@ -180,6 +209,20 @@ async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
 ```
 
 `InputType` has `SearchDocument`, `SearchQuery`, `Classification` and `Clustering`. Each provider gets its own name for it (Cohere `search_query`, Gemini `RETRIEVAL_QUERY`, Jina `retrieval.query`, and so on); `gemini-embedding-2` gets it as a text prefix. OpenAI and Mistral have no such parameter and ignore it.
+
+## Long inputs
+
+```rust,no_run
+use embedrs::Truncate;
+
+async fn run(client: &embedrs::Client, texts: &[String]) -> embedrs::Result<()> {
+    let result = client.embed(texts).truncate(Truncate::Error).await?;
+    println!("{}", result.len());
+    Ok(())
+}
+```
+
+`Truncate::Provider` (the default) leaves long inputs to the provider: Voyage, Cohere, Gemini and the local models cut the end, OpenAI and Jina answer with an error. `Truncate::End` asks for cutting, `Truncate::Error` for refusing; a provider without such a switch returns `Error::Unsupported`. Local models refuse with `Error::InputTooLong` before running, and so do OpenAI models when `token-count` is on.
 
 ## Retries, timeouts and fallback
 
@@ -194,19 +237,40 @@ async fn run() -> embedrs::Result<()> {
         .with_fallback(Client::cohere("cohere-key"))
         .with_fallback(Client::voyage("voyage-key").with_model("voyage-4-lite"));
 
-    let result = client.embed(vec!["hello".into()]).await?;
+    let result = client.embed(["hello"]).await?;
     println!("answered by {}", result.model);
     Ok(())
 }
 ```
 
-Without `with_retry_backoff`, a failed request is not retried. When the primary fails, each fallback is tried in order with its own model and dimensions; if all fail, the primary's error is returned. Vectors from different models are not comparable, so a fallback is for availability, not for filling one index from several models.
+Without `with_retry`, a failed request is not retried. When the primary still fails with a transient error (a status from the list above, or no connection), each fallback is tried in order with its own model and dimensions; if all fail, the primary's error is returned. A 400, 401, 403 or 422 is returned at once, so a wrong key does not hide behind a fallback. Vectors from different models are not comparable, so a fallback is for availability, not for filling one index from several models.
+
+## Your own HTTP client
+
+```rust,no_run
+use embedrs::{Client, transport::HttpResponse};
+
+fn run(client: &Client) -> embedrs::Result<()> {
+    let prepared = client.prepare(["hello world"])?;
+    let request = prepared.request(); // method, url, headers, body
+    println!("POST {} ({} bytes)", request.url, request.body.len());
+
+    let body = br#"{"data":[{"index":0,"embedding":[0.6,0.8]}]}"#; // the answer from your HTTP client
+    let result = prepared.finish(HttpResponse::new(200, vec![], body.to_vec()))?;
+    assert_eq!(&result[0], &[0.6, 0.8]);
+    Ok(())
+}
+```
+
+`prepare` and `finish` do no I/O, so any HTTP client works, blocking ones included; [`examples/blocking.rs`](examples/blocking.rs) runs on a std `TcpStream` with no dependency at all. To keep retries, fallbacks, batching and timeouts as well, implement `Transport` (two required methods: send a request, sleep) and pass it to `Client::new`. embedrs never spawns a task and does not care which runtime polls it. For your own reqwest settings (proxy, pool, headers), build the client with `ReqwestTransport::client_builder()`, which sets up the TLS provider, and pass it through `client.with_transport(Arc::new(ReqwestTransport::from(reqwest_client)))`.
+
+Code that should work with any embedding backend can take `&dyn embedrs::Embed`, a one-method trait that `Client` implements.
 
 ## Cost tracking
 
 ```rust,no_run
 async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
-    let result = client.embed(vec!["hello".into()]).await?;
+    let result = client.embed(["hello"]).await?;
     if let Some(cost) = result.usage.cost {
         println!("about ${cost:.8}");
     }
@@ -214,7 +278,7 @@ async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
 }
 ```
 
-`cost` is `None` when the model is not in the price table or the provider reported no token count.
+`cost` is `None` when the model is not in the price table, when the provider reported no token count, or without the `cost-tracking` feature.
 
 ## Errors
 
@@ -222,7 +286,7 @@ async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
 use embedrs::Error;
 
 async fn run(client: &embedrs::Client) {
-    match client.embed(vec!["hello".into()]).await {
+    match client.embed(["hello"]).await {
         Ok(result) => println!("{} vectors", result.len()),
         Err(Error::Api { status: 429, .. }) => eprintln!("rate limited"),
         Err(Error::Api { status, message, .. }) => eprintln!("API error {status}: {message}"),
