@@ -42,6 +42,14 @@ token-count = ["dep:tiktoken", "tiktoken/vocab-cl100k_base"]
 local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:hf-hub", "dep:ruzstd", "dep:tokio", "tokio/rt", "tokio/sync"]
 
 [[example]]
+name = "basic"
+required-features = ["reqwest"]
+
+[[example]]
+name = "similarity"
+required-features = ["reqwest"]
+
+[[example]]
 name = "benchmark"
 required-features = ["local"]
 

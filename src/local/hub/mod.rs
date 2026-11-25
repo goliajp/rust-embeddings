@@ -48,7 +48,10 @@ pub(crate) fn cache_dir() -> PathBuf {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .unwrap_or_default();
-    PathBuf::from(home).join(".cache").join("huggingface").join("hub")
+    PathBuf::from(home)
+        .join(".cache")
+        .join("huggingface")
+        .join("hub")
 }
 
 impl Hub {
@@ -63,12 +66,16 @@ impl Hub {
     }
 
     fn repo_dir(&self, p: &Pinned) -> PathBuf {
-        self.cache.join(format!("models--{}", p.repo.replace('/', "--")))
+        self.cache
+            .join(format!("models--{}", p.repo.replace('/', "--")))
     }
 
     /// The path the file has once downloaded.
     pub(crate) fn snapshot(&self, p: &Pinned) -> PathBuf {
-        self.repo_dir(p).join("snapshots").join(p.revision).join(p.file)
+        self.repo_dir(p)
+            .join("snapshots")
+            .join(p.revision)
+            .join(p.file)
     }
 
     /// The file's path, downloading and verifying it first if it is not cached.
@@ -85,7 +92,11 @@ impl Hub {
             .join(format!("{}.lock", p.sha256));
         let guard = crate::rt::oneshot::spawn(move || -> io::Result<File> {
             fs::create_dir_all(lock.parent().expect("lock path has a parent"))?;
-            let f = OpenOptions::new().create(true).truncate(false).write(true).open(&lock)?;
+            let f = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&lock)?;
             f.lock()?;
             Ok(f)
         })
@@ -94,7 +105,8 @@ impl Hub {
         .map_err(|e| fail(format!("cannot lock the model cache: {e}")))?;
         if !path.exists() {
             self.fetch(p, transport).await?;
-            publish(&self.repo_dir(p), p).map_err(|e| fail(format!("cannot publish {}: {e}", p.file)))?;
+            publish(&self.repo_dir(p), p)
+                .map_err(|e| fail(format!("cannot publish {}: {e}", p.file)))?;
         }
         drop(guard);
         Ok(path)
@@ -128,7 +140,10 @@ impl Hub {
     }
 
     async fn download(&self, p: &Pinned, transport: &dyn Transport, sink: &mut Sink) -> Result<()> {
-        let mut url = format!("{}/{}/resolve/{}/{}", self.endpoint, p.repo, p.revision, p.file);
+        let mut url = format!(
+            "{}/{}/resolve/{}/{}",
+            self.endpoint, p.repo, p.revision, p.file
+        );
         let mut auth = self.token.as_ref().map(|t| format!("Bearer {t}"));
         for _ in 0..=MAX_REDIRECTS {
             let mut headers = Vec::new();
@@ -146,7 +161,11 @@ impl Hub {
             };
             let head = transport.download(req, sink).await?;
             match head.status {
-                200 => return sink.restarted().map_err(|e| fail(format!("cannot rewrite {}: {e}", p.file))),
+                200 => {
+                    return sink
+                        .restarted()
+                        .map_err(|e| fail(format!("cannot rewrite {}: {e}", p.file)));
+                }
                 206 => {
                     let start = head
                         .header("content-range")
@@ -154,24 +173,36 @@ impl Hub {
                         .and_then(|v| v.split('-').next())
                         .and_then(|v| v.trim().parse::<u64>().ok());
                     if start != Some(sink.resumed_at) {
-                        return Err(fail(format!("unexpected content-range {:?} for {}", head.header("content-range"), p.file)));
+                        return Err(fail(format!(
+                            "unexpected content-range {:?} for {}",
+                            head.header("content-range"),
+                            p.file
+                        )));
                     }
                     return Ok(());
                 }
                 301 | 302 | 303 | 307 | 308 => {
-                    let next = head
-                        .header("location")
-                        .ok_or_else(|| fail(format!("redirect without a location for {}", p.file)))?;
+                    let next = head.header("location").ok_or_else(|| {
+                        fail(format!("redirect without a location for {}", p.file))
+                    })?;
                     let next = resolve(&url, next);
                     if origin(&next) != origin(&url) {
                         auth = None;
                     }
                     url = next;
                 }
-                s => return Err(fail(format!("downloading {} from {} answered {s}", p.file, p.repo))),
+                s => {
+                    return Err(fail(format!(
+                        "downloading {} from {} answered {s}",
+                        p.file, p.repo
+                    )));
+                }
             }
         }
-        Err(fail(format!("more than {MAX_REDIRECTS} redirects for {}", p.file)))
+        Err(fail(format!(
+            "more than {MAX_REDIRECTS} redirects for {}",
+            p.file
+        )))
     }
 }
 

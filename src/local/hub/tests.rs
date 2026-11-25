@@ -11,11 +11,22 @@ use crate::transport::{BoxFuture, HttpResponse, ResponseHead, TransportError, Tr
 /// Blocking HTTP/1.1 over std sockets: enough for these tests.
 struct StdTransport;
 
-fn exchange(req: &HttpRequest) -> io::Result<(u16, Vec<(String, String)>, BufReader<TcpStream>, Option<u64>)> {
+fn exchange(
+    req: &HttpRequest,
+) -> io::Result<(
+    u16,
+    Vec<(String, String)>,
+    BufReader<TcpStream>,
+    Option<u64>,
+)> {
     let rest = req.url.strip_prefix("http://").expect("http url");
     let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
     let mut s = TcpStream::connect(host)?;
-    write!(s, "{} {path} HTTP/1.1\r\nhost: {host}\r\nconnection: close\r\n", req.method.as_str())?;
+    write!(
+        s,
+        "{} {path} HTTP/1.1\r\nhost: {host}\r\nconnection: close\r\n",
+        req.method.as_str()
+    )?;
     for (k, v) in &req.headers {
         write!(s, "{k}: {v}\r\n")?;
     }
@@ -23,7 +34,11 @@ fn exchange(req: &HttpRequest) -> io::Result<(u16, Vec<(String, String)>, BufRea
     let mut r = BufReader::new(s);
     let mut line = String::new();
     r.read_line(&mut line)?;
-    let status = line.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+    let status = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
     let mut headers = Vec::new();
     let mut len = None;
     loop {
@@ -43,13 +58,18 @@ fn exchange(req: &HttpRequest) -> io::Result<(u16, Vec<(String, String)>, BufRea
 }
 
 impl Transport for StdTransport {
-    fn send(&self, req: HttpRequest) -> BoxFuture<'_, std::result::Result<HttpResponse, TransportError>> {
+    fn send(
+        &self,
+        req: HttpRequest,
+    ) -> BoxFuture<'_, std::result::Result<HttpResponse, TransportError>> {
         let r = exchange(&req).and_then(|(status, headers, mut r, _)| {
             let mut body = Vec::new();
             r.read_to_end(&mut body)?;
             Ok(HttpResponse::new(status, headers, body))
         });
-        Box::pin(std::future::ready(r.map_err(|e| TransportError::new(TransportErrorKind::Io, e))))
+        Box::pin(std::future::ready(
+            r.map_err(|e| TransportError::new(TransportErrorKind::Io, e)),
+        ))
     }
 
     fn sleep(&self, _: Duration) -> BoxFuture<'static, ()> {
@@ -65,12 +85,17 @@ impl Transport for StdTransport {
             if (200..300).contains(&status) {
                 let n = io::copy(&mut r, sink)?;
                 if len.is_some_and(|l| l != n) {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "body cut short"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "body cut short",
+                    ));
                 }
             }
             Ok(ResponseHead::new(status, headers))
         });
-        Box::pin(std::future::ready(r.map_err(|e| TransportError::new(TransportErrorKind::Io, e))))
+        Box::pin(std::future::ready(
+            r.map_err(|e| TransportError::new(TransportErrorKind::Io, e)),
+        ))
     }
 }
 
@@ -106,7 +131,11 @@ fn server(handler: impl Fn(&str) -> Reply + Send + Sync + 'static) -> (String, S
             }
             log.lock().unwrap().push(head.clone());
             let reply = handler(&head);
-            let mut out = format!("HTTP/1.1 {} X\r\ncontent-length: {}\r\n", reply.status, reply.body.len());
+            let mut out = format!(
+                "HTTP/1.1 {} X\r\ncontent-length: {}\r\n",
+                reply.status,
+                reply.body.len()
+            );
             for (k, v) in &reply.headers {
                 out.push_str(&format!("{k}: {v}\r\n"));
             }
@@ -120,7 +149,9 @@ fn server(handler: impl Fn(&str) -> Reply + Send + Sync + 'static) -> (String, S
 }
 
 fn blob() -> Vec<u8> {
-    (0..3_000_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect()
+    (0..3_000_000u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect()
 }
 
 fn pinned(data: &[u8]) -> Pinned {
@@ -165,7 +196,10 @@ fn serving(data: Vec<u8>, ranges: bool, cut: Option<usize>) -> impl Fn(&str) -> 
     move |head| match range_start(head).filter(|_| ranges) {
         Some(start) => Reply {
             status: 206,
-            headers: vec![("content-range".into(), format!("bytes {start}-{}/{}", data.len() - 1, data.len()))],
+            headers: vec![(
+                "content-range".into(),
+                format!("bytes {start}-{}/{}", data.len() - 1, data.len()),
+            )],
             body: data[start..].to_vec(),
             cut: None,
         },
@@ -186,10 +220,20 @@ fn clean_download_is_published_and_found_again() {
     let dir = scratch("clean");
     let h = hub(&dir, &base, None);
     let path = block_on(h.ensure(&p, &StdTransport)).unwrap();
-    assert_eq!(path, dir.join("models--org--model/snapshots").join(p.revision).join(p.file));
+    assert_eq!(
+        path,
+        dir.join("models--org--model/snapshots")
+            .join(p.revision)
+            .join(p.file)
+    );
     assert_eq!(fs::read(&path).unwrap(), data);
     #[cfg(unix)]
-    assert!(fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+    assert!(
+        fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
     assert!(seen.lock().unwrap()[0].starts_with("get /org/model/resolve/0123456789abcdef"));
     assert_eq!(block_on(h.ensure(&p, &StdTransport)).unwrap(), path);
     assert_eq!(seen.lock().unwrap().len(), 1);
@@ -203,7 +247,9 @@ fn interrupted_download_resumes_with_a_range() {
     let dir = scratch("resume");
     let (base, _) = server(serving(data.clone(), true, Some(1_234_567)));
     assert!(block_on(hub(&dir, &base, None).ensure(&p, &StdTransport)).is_err());
-    let part = dir.join("models--org--model/blobs").join(format!("{}.incomplete", p.sha256));
+    let part = dir
+        .join("models--org--model/blobs")
+        .join(format!("{}.incomplete", p.sha256));
     assert_eq!(fs::metadata(&part).unwrap().len(), 1_234_567);
     let (base, seen) = server(serving(data.clone(), true, None));
     let path = block_on(hub(&dir, &base, None).ensure(&p, &StdTransport)).unwrap();

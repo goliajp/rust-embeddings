@@ -21,6 +21,16 @@ pub(crate) enum Backend {
     Local(crate::local::Handle),
 }
 
+impl Backend {
+    pub(crate) fn endpoint(&self) -> Option<&Endpoint> {
+        match self {
+            Backend::Cloud(ep) => Some(ep),
+            #[cfg(feature = "local")]
+            Backend::Local(_) => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Defaults {
     pub(crate) model: Option<String>,

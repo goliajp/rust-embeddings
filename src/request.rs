@@ -4,7 +4,7 @@ use std::future::IntoFuture;
 use std::time::Duration;
 
 use crate::client::{Backend, Client};
-use crate::endpoint::Wire;
+use crate::endpoint::{Endpoint, Wire};
 use crate::error::{Error, Result};
 use crate::input::{InputType, Inputs, Truncate};
 use crate::result::EmbedResult;
@@ -116,15 +116,11 @@ impl<'c, 't> EmbedBuilder<'c, 't> {
     /// [`Client::prepare`].
     pub fn prepare(self) -> Result<Prepared> {
         let p = plan(self.client, &self.o, true);
-        let ep = match &self.client.backend {
-            Backend::Cloud(ep) => ep,
-            #[cfg(feature = "local")]
-            Backend::Local(_) => {
-                return Err(Error::unsupported(
-                    &p.model,
-                    "prepare (local models run in-process)",
-                ));
-            }
+        let Some(ep) = self.client.backend.endpoint() else {
+            return Err(Error::unsupported(
+                &p.model,
+                "prepare (local models run in-process)",
+            ));
         };
         check_count(self.inputs.len(), ep.limits.max_inputs)?;
         let request = wire::build(ep, &call(&p, &self.inputs))?;
@@ -235,11 +231,19 @@ async fn chain(client: &Client, inputs: &Inputs<'_>, o: &Overrides) -> Result<Em
 
 /// The first attempt and its retries against one client.
 async fn attempts(client: &Client, p: &Plan, inputs: &Inputs<'_>) -> Result<EmbedResult> {
-    let ep = match &client.backend {
-        Backend::Cloud(ep) => ep,
+    match &client.backend {
+        Backend::Cloud(ep) => cloud(client, ep, p, inputs).await,
         #[cfg(feature = "local")]
-        Backend::Local(h) => return crate::local::embed(h, p, inputs).await,
-    };
+        Backend::Local(h) => crate::local::embed(h, p, inputs).await,
+    }
+}
+
+async fn cloud(
+    client: &Client,
+    ep: &Endpoint,
+    p: &Plan,
+    inputs: &Inputs<'_>,
+) -> Result<EmbedResult> {
     check_count(inputs.len(), ep.limits.max_inputs)?;
     let req = wire::build(ep, &call(p, inputs))?;
     let transport = client

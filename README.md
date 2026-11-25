@@ -74,12 +74,12 @@ async fn run() -> embedrs::Result<()> {
     // cloud: OpenAI text-embedding-3-small
     let client = embedrs::cloud("sk-...");
     let result = client.embed(vec!["hello world".into()]).await?;
-    println!("{} dimensions", result.embeddings[0].len()); // 1536
+    println!("{} dimensions", result.dim()); // 1536
 
     // local: all-MiniLM-L6-v2, no API key
     let client = embedrs::local();
     let result = client.embed(vec!["hello world".into()]).await?;
-    println!("{} dimensions", result.embeddings[0].len()); // 384
+    println!("{} dimensions", result.dim()); // 384
     Ok(())
 }
 ```
@@ -154,7 +154,7 @@ async fn run() -> embedrs::Result<()> {
         .model("text-embedding-3-large")
         .await?;
 
-    println!("{} vectors, {} tokens", result.embeddings.len(), result.usage.total_tokens);
+    println!("{} vectors, {:?} tokens", result.len(), result.usage.total_tokens);
     Ok(())
 }
 ```
@@ -174,7 +174,7 @@ async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
         .input_type(InputType::SearchQuery)
         .dimensions(256)
         .await?;
-    println!("{} / {}", docs.embeddings[0].len(), query.embeddings[0].len());
+    println!("{} / {}", docs.dim(), query.dim());
     Ok(())
 }
 ```
@@ -185,11 +185,11 @@ async fn run(client: &embedrs::Client) -> embedrs::Result<()> {
 
 ```rust,no_run
 use std::time::Duration;
-use embedrs::{BackoffConfig, Client};
+use embedrs::{Backoff, Client};
 
 async fn run() -> embedrs::Result<()> {
     let client = Client::openai("sk-...")
-        .with_retry_backoff(BackoffConfig::default()) // 500 ms base, 30 s cap, 3 retries
+        .with_retry(Backoff::new()) // 500 ms base, 30 s cap, 3 retries
         .with_timeout(Duration::from_secs(120)) // whole request, retries included (default 60 s)
         .with_fallback(Client::cohere("cohere-key"))
         .with_fallback(Client::voyage("voyage-key").with_model("voyage-4-lite"));
@@ -223,11 +223,11 @@ use embedrs::Error;
 
 async fn run(client: &embedrs::Client) {
     match client.embed(vec!["hello".into()]).await {
-        Ok(result) => println!("{} vectors", result.embeddings.len()),
+        Ok(result) => println!("{} vectors", result.len()),
         Err(Error::Api { status: 429, .. }) => eprintln!("rate limited"),
         Err(Error::Api { status, message, .. }) => eprintln!("API error {status}: {message}"),
         Err(Error::Timeout(after)) => eprintln!("timed out after {after:?}"),
-        Err(Error::Http(e)) => eprintln!("network error: {e}"),
+        Err(Error::Transport(e)) => eprintln!("network error: {e}"),
         Err(e) => eprintln!("{e}"),
     }
 }
