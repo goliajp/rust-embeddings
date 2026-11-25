@@ -19,11 +19,17 @@ const MAX_DEPTH: u32 = 64;
 pub(crate) struct Cursor<'a> {
     s: &'a [u8],
     pos: usize,
+    // length of the last base64 vector; the next one usually ends there too
+    base64_len: usize,
 }
 
 impl<'a> Cursor<'a> {
     pub(crate) fn new(s: &'a [u8]) -> Self {
-        Self { s, pos: 0 }
+        Self {
+            s,
+            pos: 0,
+            base64_len: 0,
+        }
     }
 
     pub(crate) fn fail<T>(&self, what: &'static str) -> R<T> {
@@ -192,11 +198,22 @@ impl<'a> Cursor<'a> {
         match self.peek() {
             Some(b'"') => {
                 let start = self.pos + 1;
+                let before = out.len();
+                let end = start + self.base64_len;
+                // a quote or escape inside the guessed range fails to decode
+                if self.base64_len > 0 && self.s.get(end) == Some(&b'"') {
+                    if let Ok(n) = base64::decode_f32_le(&self.s[start..end], out) {
+                        self.pos = end + 1;
+                        return Ok(n);
+                    }
+                    out.truncate(before);
+                }
                 let (raw, escaped) = self.str_raw()?;
                 let fail = |what| Fail {
                     offset: start,
                     what,
                 };
+                self.base64_len = raw.len();
                 // some encoders write '/' as "\/"
                 let plain;
                 let raw = if escaped {

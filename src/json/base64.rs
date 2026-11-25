@@ -1,30 +1,33 @@
 //! Standard base64 of little-endian `f32` values, decoded straight into the
 //! result buffer.
 
-const INVALID: u8 = 0xff;
+// set in a table entry for a byte outside the alphabet; the 24 bits below it
+// hold the decoded bytes
+const INVALID: u32 = 1 << 31;
 
-static DECODE: [u8; 256] = {
-    let mut t = [INVALID; 256];
+/// One table per position in a group of four characters: the bits the
+/// character contributes to the three decoded bytes, first byte lowest.
+static DECODE: [[u32; 256]; 4] = {
+    let mut t = [[INVALID; 256]; 4];
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut i = 0;
     while i < 64 {
-        t[alphabet[i] as usize] = i as u8;
+        let mut k = 0;
+        while k < 4 {
+            let big = (i as u32) << (18 - 6 * k);
+            t[k][alphabet[i] as usize] = (big >> 16) | (big & 0xff00) | (big & 0xff) << 16;
+            k += 1;
+        }
         i += 1;
     }
     t
 };
 
-fn quad(c: &[u8; 4]) -> Option<u32> {
-    let (a, b, x, y) = (
-        DECODE[c[0] as usize],
-        DECODE[c[1] as usize],
-        DECODE[c[2] as usize],
-        DECODE[c[3] as usize],
-    );
-    if (a | b | x | y) & 0x80 != 0 {
-        return None;
-    }
-    Some((a as u32) << 18 | (b as u32) << 12 | (x as u32) << 6 | y as u32)
+fn quad(c: &[u8; 4]) -> u32 {
+    DECODE[0][c[0] as usize]
+        | DECODE[1][c[1] as usize]
+        | DECODE[2][c[2] as usize]
+        | DECODE[3][c[3] as usize]
 }
 
 /// Decode `s` (padding optional) and append the `f32` values to `out`.
@@ -44,40 +47,37 @@ pub(crate) fn decode_f32_le(s: &[u8], out: &mut Vec<f32>) -> Result<usize, &'sta
         return Err("base64 vector is not a whole number of f32 values");
     }
     let n = bytes / 4;
-    out.reserve(n);
+    let start = out.len();
+    out.resize(start + n, 0.0);
+    let (groups, tail_values) = out[start..].as_chunks_mut::<3>();
     // 16 characters are 12 bytes, three whole values
     let (chunks, rest) = s.as_chunks::<16>();
-    for c in chunks {
-        let mut b = [0u8; 12];
-        for k in 0..4 {
-            let q = quad(c[4 * k..4 * k + 4].try_into().expect("4 bytes")).ok_or(BAD_BYTE)?;
-            b[3 * k] = (q >> 16) as u8;
-            b[3 * k + 1] = (q >> 8) as u8;
-            b[3 * k + 2] = q as u8;
-        }
-        out.push(f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-        out.push(f32::from_le_bytes([b[4], b[5], b[6], b[7]]));
-        out.push(f32::from_le_bytes([b[8], b[9], b[10], b[11]]));
+    let mut seen = 0;
+    for (g, c) in groups.iter_mut().zip(chunks) {
+        let [c0, c1, c2, c3] = c.as_chunks::<4>().0 else {
+            unreachable!("16 bytes are four groups of four")
+        };
+        let (w0, w1, w2, w3) = (quad(c0), quad(c1), quad(c2), quad(c3));
+        seen |= w0 | w1 | w2 | w3;
+        *g = [
+            f32::from_bits(w0 | w1 << 24),
+            f32::from_bits(w1 >> 8 | w2 << 16),
+            f32::from_bits(w2 >> 16 | w3 << 8),
+        ];
     }
     let mut b = [0u8; 12];
-    let mut len = 0;
-    let (quads, part) = rest.as_chunks::<4>();
-    for c in quads {
-        let q = quad(c).ok_or(BAD_BYTE)?;
-        b[len..len + 3].copy_from_slice(&[(q >> 16) as u8, (q >> 8) as u8, q as u8]);
-        len += 3;
+    for (b, c) in b.as_chunks_mut::<3>().0.iter_mut().zip(rest.chunks(4)) {
+        let mut padded = [b'A'; 4];
+        padded[..c.len()].copy_from_slice(c);
+        let w = quad(&padded);
+        seen |= w;
+        b.copy_from_slice(&w.to_le_bytes()[..3]);
     }
-    if !part.is_empty() {
-        let mut c = [b'A'; 4];
-        c[..part.len()].copy_from_slice(part);
-        let q = quad(&c).ok_or(BAD_BYTE)?;
-        let got = [(q >> 16) as u8, (q >> 8) as u8, q as u8];
-        let keep = part.len() - 1;
-        b[len..len + keep].copy_from_slice(&got[..keep]);
-        len += keep;
+    for (v, b) in tail_values.iter_mut().zip(b.as_chunks::<4>().0) {
+        *v = f32::from_le_bytes(*b);
     }
-    for v in b[..len].as_chunks::<4>().0 {
-        out.push(f32::from_le_bytes(*v));
+    if seen & INVALID != 0 {
+        return Err(BAD_BYTE);
     }
     Ok(n)
 }
