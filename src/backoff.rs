@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn clone_and_debug() {
         let config = BackoffConfig::default();
-        let cloned = config.clone();
+        let cloned = config;
         assert_eq!(cloned.base_delay, config.base_delay);
         let debug = format!("{config:?}");
         assert!(debug.contains("BackoffConfig"));

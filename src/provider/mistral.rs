@@ -1,30 +1,28 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::RawEmbedResponse;
-use crate::error::{Error, Result};
+use super::http::post_json;
+use super::openai_shape::Response;
+use crate::error::Result;
 
 #[derive(Serialize)]
 struct Request<'a> {
     model: &'a str,
     input: &'a [String],
     encoding_format: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_dimension: Option<u32>,
 }
 
-#[derive(Deserialize)]
-struct Response {
-    data: Vec<EmbeddingData>,
-    model: String,
-    usage: UsageInfo,
-}
-
-#[derive(Deserialize)]
-struct EmbeddingData {
-    embedding: Vec<f32>,
-}
-
-#[derive(Deserialize)]
-struct UsageInfo {
-    total_tokens: u32,
+/// `Some(false)` for models documented with a fixed width, `None` when unknown.
+pub(crate) fn accepts_dimensions(model: &str) -> Option<bool> {
+    if model.starts_with("codestral-embed") {
+        Some(true)
+    } else if model.starts_with("mistral-embed") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 pub(crate) async fn send_mistral(
@@ -33,39 +31,19 @@ pub(crate) async fn send_mistral(
     api_key: &str,
     model: &str,
     texts: &[String],
+    dimensions: Option<u32>,
 ) -> Result<RawEmbedResponse> {
+    super::check_dimensions(model, dimensions, accepts_dimensions(model))?;
     let body = Request {
         model,
         input: texts,
         encoding_format: "float",
+        output_dimension: dimensions,
     };
-
-    let resp = http
+    let req = http
         .post(format!("{base_url}/embeddings"))
-        .header("Authorization", format!("Bearer {api_key}"))
-        .json(&body)
-        .send()
-        .await?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let retry_after = super::parse_retry_after(resp.headers());
-        let text = resp.text().await.unwrap_or_default();
-        return Err(Error::Api {
-            status: status.as_u16(),
-            message: text,
-            retry_after,
-        });
-    }
-
-    let data: Response = resp.json().await?;
-    let embeddings = data.data.into_iter().map(|d| d.embedding).collect();
-
-    Ok(RawEmbedResponse {
-        embeddings,
-        total_tokens: data.usage.total_tokens,
-        model: data.model,
-    })
+        .bearer_auth(api_key);
+    post_json::<Response>(req, &body).await?.into_raw(model)
 }
 
 #[cfg(test)]
@@ -73,29 +51,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_serialization_basic() {
+    fn request_serialization() {
         let input = vec!["hello".to_string()];
         let req = Request {
-            model: "mistral-embed",
+            model: "codestral-embed",
             input: &input,
             encoding_format: "float",
+            output_dimension: Some(256),
         };
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["model"], "mistral-embed");
+        assert_eq!(json["model"], "codestral-embed");
         assert_eq!(json["input"][0], "hello");
-        assert_eq!(json["encoding_format"], "float");
+        assert_eq!(json["output_dimension"], 256);
+        let req = Request {
+            output_dimension: None,
+            ..req
+        };
+        assert!(
+            serde_json::to_value(&req)
+                .unwrap()
+                .get("output_dimension")
+                .is_none()
+        );
     }
 
     #[test]
-    fn response_deserialization() {
-        let json = r#"{
-            "data": [{"embedding": [0.1, 0.2, 0.3]}],
-            "model": "mistral-embed",
-            "usage": {"prompt_tokens": 5, "total_tokens": 5}
-        }"#;
-        let resp: Response = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.data.len(), 1);
-        assert_eq!(resp.model, "mistral-embed");
-        assert_eq!(resp.usage.total_tokens, 5);
+    fn dimension_support_by_model() {
+        assert_eq!(accepts_dimensions("codestral-embed-2505"), Some(true));
+        assert_eq!(accepts_dimensions("mistral-embed"), Some(false));
+        assert_eq!(accepts_dimensions("some-new-embed"), None);
     }
 }

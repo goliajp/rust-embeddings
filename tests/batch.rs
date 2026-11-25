@@ -35,7 +35,7 @@ async fn batch_embed_splits_and_merges() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     let texts: Vec<String> = (0..4).map(|i| format!("text {i}")).collect();
     let result = client
         .embed_batch(texts)
@@ -67,7 +67,7 @@ async fn batch_embed_single_chunk() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     let texts: Vec<String> = (0..3).map(|i| format!("text {i}")).collect();
     let result = client.embed_batch(texts).chunk_size(100).await.unwrap();
 
@@ -115,7 +115,7 @@ async fn batch_preserves_text_order_across_chunks() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     let texts: Vec<String> = (0..6).map(|i| format!("text_{i}")).collect();
     let result = client
         .embed_batch(texts.clone())
@@ -146,7 +146,7 @@ async fn batch_error_propagation_on_chunk_failure() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     let texts: Vec<String> = (0..4).map(|i| format!("text {i}")).collect();
     let err = client.embed_batch(texts).chunk_size(2).await.unwrap_err();
 
@@ -216,7 +216,7 @@ async fn batch_respects_concurrency_limit() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     let texts: Vec<String> = (0..4).map(|i| format!("text {i}")).collect();
     let result = client
         .embed_batch(texts)
@@ -248,7 +248,7 @@ async fn batch_propagates_model_and_dimensions() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     let texts: Vec<String> = (0..2).map(|i| format!("text {i}")).collect();
     let result = client
         .embed_batch(texts)
@@ -284,7 +284,7 @@ async fn embed_at_exact_provider_limit_openai() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri());
+    let client = embedrs::Client::openai_compatible("test-key", server.uri());
     let texts: Vec<String> = (0..n).map(|i| format!("text {i}")).collect();
     let result = client.embed(texts).await.unwrap();
 
@@ -342,15 +342,15 @@ async fn embed_exceeding_gemini_limit_returns_input_too_large() {
 
 #[tokio::test]
 async fn embed_exceeding_voyage_limit_returns_input_too_large() {
-    // voyage max_batch_size = 128
+    // voyage accepts 1000 texts per request
     let client = embedrs::Client::voyage("test-key");
-    let texts: Vec<String> = (0..129).map(|i| format!("text {i}")).collect();
+    let texts: Vec<String> = (0..1001).map(|i| format!("text {i}")).collect();
     let err = client.embed(texts).await.unwrap_err();
 
     match err {
         embedrs::Error::InputTooLarge(actual, max) => {
-            assert_eq!(actual, 129);
-            assert_eq!(max, 128);
+            assert_eq!(actual, 1001);
+            assert_eq!(max, 1000);
         }
         _ => panic!("expected InputTooLarge error, got {err:?}"),
     }

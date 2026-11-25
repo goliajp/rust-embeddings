@@ -6,7 +6,6 @@ pub enum PoolingStrategy {
     /// Average all token embeddings weighted by the attention mask.
     MeanPooling,
     /// Use the `[CLS]` token embedding.
-    #[allow(dead_code)]
     ClsToken,
 }
 
@@ -117,6 +116,14 @@ pub fn get_model(name: &str) -> Option<&'static ModelDefinition> {
         "all-MiniLM-L12-v2" => Some(&ALL_MINILM_L12_V2),
         "bge-small-en-v1.5" => Some(&BGE_SMALL_EN_V1_5),
         "gte-small" => Some(&GTE_SMALL),
+        _ => None,
+    }
+}
+
+/// instruction the model was trained to see in front of search queries
+pub(crate) fn query_prefix(def: &ModelDefinition) -> Option<&'static str> {
+    match def.name {
+        "bge-small-en-v1.5" => Some("Represent this sentence for searching relevant passages: "),
         _ => None,
     }
 }

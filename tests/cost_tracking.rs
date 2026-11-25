@@ -27,7 +27,7 @@ async fn cost_estimated_for_known_model() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri())
+    let client = embedrs::Client::openai_compatible("test-key", server.uri())
         .with_model("text-embedding-3-small");
     let result = client.embed(vec!["hello".into()]).await.unwrap();
 
@@ -51,7 +51,7 @@ async fn cost_none_for_unknown_model() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::openai_compatible("test-key", &server.uri())
+    let client = embedrs::Client::openai_compatible("test-key", server.uri())
         .with_model("my-custom-embedding-v1");
     let result = client.embed(vec!["hello".into()]).await.unwrap();
 
@@ -101,10 +101,10 @@ fn pricing_works_without_vocabularies() {
 /// `cost` is `Option`, so a provider the price table does not carry reports
 /// nothing and explains nothing — the number simply never appears. This test
 /// records where that line currently falls, so it moves deliberately: the
-/// table gained `gemini-embedding-001` in tiktoken 4.1 and the Voyage family in
-/// 4.1.1. Cohere, Jina and Mistral embeddings are still absent upstream —
-/// their per-token rates are not published on a vendor page, and a guessed
-/// rate bills someone wrongly and silently.
+/// table gained `gemini-embedding-001` in tiktoken 4.1, the Voyage family in
+/// 4.1.1 and `mistral-embed` in 5.0. Cohere and Jina embeddings are still
+/// absent upstream — their per-token rates are not published on a vendor page,
+/// and a guessed rate bills someone wrongly and silently.
 #[test]
 fn default_models_that_the_price_table_carries() {
     for id in [
@@ -112,6 +112,7 @@ fn default_models_that_the_price_table_carries() {
         "gemini-embedding-001",
         "voyage-3-large",
         "voyage-4-large",
+        "mistral-embed",
     ] {
         assert!(
             tiktoken::pricing::estimate_cost(id, 1_000_000, 0).is_some_and(|c| c > 0.0),
@@ -119,10 +120,38 @@ fn default_models_that_the_price_table_carries() {
         );
     }
 
-    for id in ["embed-v4.0", "jina-embeddings-v3", "mistral-embed"] {
+    for id in ["embed-v4.0", "jina-embeddings-v3"] {
         assert!(
             tiktoken::pricing::estimate_cost(id, 1_000_000, 0).is_none(),
             "{id} is now priced upstream — drop it from this list and say so in the changelog"
         );
+    }
+}
+
+/// Gemini reports its count in `usageMetadata`; without one the count is
+/// unknown, so there is no cost rather than a cost of zero.
+#[tokio::test]
+async fn gemini_cost_follows_reported_usage() {
+    use wiremock::matchers::path_regex;
+
+    for (body, priced) in [
+        (
+            serde_json::json!({"embedding": {"values": [0.1]}, "usageMetadata": {"promptTokenCount": 1000}}),
+            true,
+        ),
+        (serde_json::json!({"embedding": {"values": [0.1]}}), false),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*:embedContent$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let client = embedrs::Client::gemini_compatible("k", server.uri());
+        let result = client.embed(vec!["hello".into()]).await.unwrap();
+        assert_eq!(result.usage.cost.is_some_and(|c| c > 0.0), priced);
+        if !priced {
+            assert_eq!(result.usage.cost, None);
+        }
     }
 }

@@ -26,7 +26,7 @@ async fn embed_cohere_basic() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::cohere_compatible("cohere-key", &server.uri());
+    let client = embedrs::Client::cohere_compatible("cohere-key", server.uri());
     let result = client
         .embed(vec!["hello".into(), "world".into()])
         .await
@@ -47,9 +47,9 @@ async fn embed_cohere_with_input_type() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::cohere_compatible("cohere-key", &server.uri());
+    let client = embedrs::Client::cohere_compatible("cohere-key", server.uri());
     let result = client
-        .embed(vec!["test".into()])
+        .embed(vec!["test".into(), "two".into()])
         .input_type(embedrs::InputType::SearchQuery)
         .await
         .unwrap();
@@ -67,7 +67,7 @@ async fn embed_cohere_sends_correct_request_body() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::cohere_compatible("cohere-key", &server.uri());
+    let client = embedrs::Client::cohere_compatible("cohere-key", server.uri());
     let _result = client
         .embed(vec!["hello".into(), "world".into()])
         .model("embed-v4.0")
@@ -81,7 +81,8 @@ async fn embed_cohere_sends_correct_request_body() {
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(body["model"], "embed-v4.0");
     assert_eq!(body["input_type"], "search_query");
-    assert_eq!(body["embedding_types"], serde_json::json!(["float"]));
+    assert_eq!(body["embedding_types"], serde_json::json!(["base64"]));
+    assert!(body.get("output_dimension").is_none());
 
     let texts = body["texts"].as_array().unwrap();
     assert_eq!(texts.len(), 2);
@@ -99,7 +100,45 @@ async fn embed_cohere_api_error() {
         .mount(&server)
         .await;
 
-    let client = embedrs::Client::cohere_compatible("cohere-key", &server.uri());
+    let client = embedrs::Client::cohere_compatible("cohere-key", server.uri());
     let err = client.embed(vec!["test".into()]).await.unwrap_err();
     assert!(matches!(err, embedrs::Error::Api { status: 400, .. }));
+}
+
+#[tokio::test]
+async fn cohere_sends_output_dimension_and_decodes_base64() {
+    let server = MockServer::start().await;
+    let body = serde_json::json!({
+        "embeddings": {"base64": ["AACAPwAAAEA="]},
+        "meta": {"billed_units": {"input_tokens": 3}}
+    });
+    Mock::given(method("POST"))
+        .and(path("/embed"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    let client = embedrs::Client::cohere_compatible("k", server.uri()).with_dimensions(512);
+    let result = client.embed(vec!["a".into()]).await.unwrap();
+    assert_eq!(result.embeddings, vec![vec![1.0, 2.0]]);
+    let requests = server.received_requests().await.unwrap();
+    let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(sent["output_dimension"], 512);
+}
+
+#[tokio::test]
+async fn cohere_v3_rejects_dimensions_without_a_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(mock_cohere_response()))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let client = embedrs::Client::cohere_compatible("k", server.uri());
+    let err = client
+        .embed(vec!["a".into()])
+        .model("embed-english-v3.0")
+        .dimensions(256)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("dimensions(256)"), "{err}");
 }

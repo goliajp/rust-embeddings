@@ -5,6 +5,93 @@ All notable changes to this crate will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-11-25
+
+### Upgrading from 0.6.1
+
+No API change: code that builds against 0.6.1 builds against this release.
+Four behaviours change, and one of them changes stored vectors:
+
+- **Local models now read up to their real input limit.** 0.6 cut every text
+  at 128 tokens. `all-MiniLM-L6-v2` now reads 256 tokens, `gte-small` and
+  `bge-small-en-v1.5` 512, `all-MiniLM-L12-v2` stays at 128. Vectors of texts
+  longer than 128 tokens change; shorter texts give the same vectors as
+  before (padding never affected them). Re-embed long texts if you compare
+  them against vectors stored by 0.6.
+- **A fallback uses its own model.** `.model()`, `.dimensions()`,
+  `with_model()` and `with_dimensions()` on the primary client no longer go
+  to the fallbacks; set them on each fallback client.
+- **Unsupported options are refused instead of ignored.** A local client
+  given a model id that is not a local model returns `Error::UnknownModel`,
+  and `.dimensions(n)` returns an error unless `n` is the model's width.
+  Cloud models documented with a fixed width (Cohere v3, `mistral-embed`,
+  older Voyage models) return an error for `.dimensions(n)` instead of
+  sending a request whose answer has another width.
+- **Retries cover more failures.** With `with_retry_backoff`, 408, 500,
+  502, 504, 529 and connection errors are retried as well as 429 and 503.
+
+### Fixed
+
+- Several local clients loading the same model at the same time failed on a
+  cold cache with `Lock acquisition failed: .../blobs/<sha>.lock`: hf-hub
+  gives up on its download lock after about five seconds, before a 91 MB
+  download ends. One process now loads each model once and shares it
+  between clients, and a file lock in the cache directory makes other
+  processes wait for a running download.
+- Local models padded every text to 128 tokens and cut it there. Texts are
+  now sorted by length and run in groups padded to the longest text in the
+  group, and truncated at the model's limit. `bge-small-en-v1.5` no longer
+  fails on texts over 512 tokens (`index-select invalid index 512`).
+- Local token counts included padding (`"hi"` counted 128 tokens); they now
+  count the tokens the model read.
+- A local client given `.model("text-embedding-3-large").dimensions(64)`
+  answered with 384-dimensional vectors labelled `text-embedding-3-large`.
+  `.model()` now accepts another local model id and runs that model;
+  `EmbedResult::model` names the model that ran.
+- `bge-small-en-v1.5` gets the query instruction it was trained with when
+  the input type is `SearchQuery`.
+- `.dimensions()` was dropped for Cohere, Voyage and Mistral; it is now sent
+  as `output_dimension` to the models that accept it.
+- Gemini: the API key was sent in the URL, where an HTTP error message could
+  print it; it now goes in the `x-goog-api-key` header. Token counts are read
+  from `usageMetadata` instead of reported as 0, so `cost-tracking` prices
+  Gemini calls. `gemini-embedding-2` gets its task as a text prefix instead
+  of the `taskType` field it does not accept.
+- A provider that reports no token count no longer gets a cost of 0.0 under
+  `cost-tracking`; the cost is `None`.
+- A fallback received the primary's model id and dimensions.
+- Responses are checked: the number of vectors must match the number of
+  texts, and OpenAI-shaped responses are put back in input order by `index`.
+- Jina: the output format field is `embedding_type`; v5 models get
+  `clustering` instead of v3's `separation` for `InputType::Clustering`.
+- Voyage accepts 1000 texts per request (was limited to 128 here).
+  `embed_batch` still sends 128 per request to stay under the 120k-token
+  request limit of the larger models.
+
+### Performance
+
+- Local inference: per-group padding, Accelerate for matrix products on
+  macOS (nothing to enable; the framework ships with macOS) and a forward
+  pass that fuses the query, key and value projections. On an Apple M4 Pro
+  with `all-MiniLM-L6-v2`, one 8-word text takes 3.6 ms instead of 18.7 ms,
+  and 256 texts of 40 words run at 776 texts/s instead of 152 (default
+  threads; the README has the full table and the comparison with fastembed
+  and model2vec-rs).
+- OpenAI (official endpoint), Voyage and Cohere are asked for base64
+  vectors instead of decimal text. A 256-vector response of 1536 dimensions
+  is 2.11 MB instead of 4.88 MB, and `embed()` on it takes 1.43 ms instead
+  of 6.85 ms over loopback. Responses in either form are accepted from every
+  provider.
+
+### Changed
+
+- `cost-tracking` uses tiktoken 5.4. Its price table prices `mistral-embed`,
+  so the Mistral default now reports a `cost` where it reported `None`.
+- Licensed under MIT or Apache-2.0, at your option (was MIT only).
+- Local model weights go to the Hugging Face cache that `HF_HOME` names (the
+  default is still `~/.cache/huggingface`), and no download progress bar is
+  printed.
+
 ## [0.6.1] - 2026-08-13
 
 Documentation only. No code changes.
@@ -149,17 +236,16 @@ Documentation only. No code changes.
 ## [0.3.2] - 2026-04-24
 
 ### Changed
-- Migrated from `goliajp/airs` mono-repo to standalone `goliajp/rust-embeddings`.
+- Moved to the standalone `goliajp/rust-embeddings` repository.
   No code changes; `repository` URL updated. `tiktoken` dep switched from
   workspace path to crates.io (`tiktoken = "3.1"`, optional, `cost-tracking` feature).
 
 ### Added
 - `examples/embedding_models/` — the reproducible experiment that picked the
-  `local()` / `cloud()` defaults (MiniLM-L6-v2 + OpenAI). Previously lived in
-  the separate `benchrs` crate inside `goliajp/airs`; folded in here since
-  it only ever evaluated `embedrs`.
+  `local()` / `cloud()` defaults (MiniLM-L6-v2 + OpenAI). Previously kept
+  in a separate crate; moved here since it only ever evaluated `embedrs`.
   Run: `cargo run --example embedding_models --features local --release`
 
 ## [0.3.1] - 2026-04
 
-- Previous release (from `goliajp/airs`).
+- Previous release.

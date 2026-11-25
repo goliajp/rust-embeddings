@@ -206,8 +206,8 @@ mod tests {
             if den == 0.0 { 0.0 } else { d / den }
         }
         // deterministic pseudo-random — no rand dep, no flake
-        let a: Vec<f32> = (0..1537).map(|i| ((i as f32 * 1.7).sin())).collect();
-        let b: Vec<f32> = (0..1537).map(|i| ((i as f32 * 0.3).cos())).collect();
+        let a: Vec<f32> = (0..1537).map(|i| (i as f32 * 1.7).sin()).collect();
+        let b: Vec<f32> = (0..1537).map(|i| (i as f32 * 0.3).cos()).collect();
 
         for n in [1024, 1536, 1537] {
             let na = &a[..n];
