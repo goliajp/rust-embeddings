@@ -1,290 +1,259 @@
-//! Unified [`Client`] facade over cloud providers and local inference.
+//! [`Client`]: one provider (or local model), its defaults and fallbacks.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::backoff::BackoffConfig;
-#[cfg(feature = "local")]
-use crate::error::{Error, Result};
-use crate::provider::{InputType, ProviderKind};
-pub use crate::request::EmbedBuilder;
-use crate::usage::Usage;
-
-/// Result of a successful embedding request.
-#[derive(Debug, Clone)]
-pub struct EmbedResult {
-    /// The embedding vectors, one per input text.
-    pub embeddings: Vec<Vec<f32>>,
-    /// Token usage information.
-    pub usage: Usage,
-    /// The model used for embedding.
-    pub model: String,
-}
+use crate::batch::BatchBuilder;
+use crate::endpoint::Endpoint;
+use crate::error::Result;
+use crate::input::{InputType, Inputs, Truncate};
+use crate::request::{EmbedBuilder, Prepared};
+use crate::result::EmbedResult;
+use crate::retry::Backoff;
+use crate::transport::{BoxFuture, Transport};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Embedding client for one provider, with optional fallbacks.
+#[derive(Clone)]
+pub(crate) enum Backend {
+    Cloud(Endpoint),
+    #[cfg(feature = "local")]
+    Local(crate::local::Handle),
+}
+
+#[derive(Clone)]
+pub(crate) struct Defaults {
+    pub(crate) model: Option<String>,
+    pub(crate) dimensions: Option<u32>,
+    pub(crate) input_type: Option<InputType>,
+    pub(crate) truncate: Option<Truncate>,
+    pub(crate) backoff: Option<Backoff>,
+    pub(crate) timeout: Duration,
+}
+
+/// An embedding client for one provider or local model, with optional
+/// fallbacks. Cheap to clone.
 ///
-/// Supports OpenAI, Cohere, Gemini, Voyage, Jina, Mistral, API-compatible
-/// servers, and local models (feature `local`). [`crate::cloud()`] and
-/// [`crate::local()`] build the default clients.
+/// ```rust,no_run
+/// # async fn run() -> embedrs::Result<()> {
+/// let client = embedrs::Client::openai("sk-...");
+/// let result = client.embed(["hello world"]).await?;
+/// println!("dimensions: {}", result.dim());
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct Client {
-    pub(crate) http: reqwest::Client,
-    pub(crate) provider: ProviderKind,
-    pub(crate) default_model: Option<String>,
-    pub(crate) default_dimensions: Option<u32>,
-    pub(crate) default_input_type: Option<InputType>,
-    pub(crate) default_backoff: Option<BackoffConfig>,
-    pub(crate) default_timeout: Duration,
+    pub(crate) backend: Backend,
+    pub(crate) transport: Option<Arc<dyn Transport>>,
+    pub(crate) defaults: Defaults,
     pub(crate) fallbacks: Vec<Client>,
 }
 
+#[cfg(feature = "reqwest")]
+macro_rules! constructors {
+    ($($name:ident, $compat:ident, $doc:literal;)*) => {$(
+        #[doc = concat!("A client for the ", $doc, " API over [`ReqwestTransport`](crate::transport::ReqwestTransport) (feature `reqwest`).")]
+        pub fn $name(key: impl Into<String>) -> Self {
+            Self::new(Endpoint::$name(key), crate::transport::ReqwestTransport::shared())
+        }
+
+        #[doc = concat!("A client for a server that speaks the ", $doc, " API at `base_url` (feature `reqwest`).")]
+        pub fn $compat(key: impl Into<String>, base_url: impl Into<String>) -> Self {
+            Self::new(Endpoint::$compat(key, base_url), crate::transport::ReqwestTransport::shared())
+        }
+    )*};
+}
+
 impl Client {
-    fn new_with_provider(provider: ProviderKind) -> Self {
+    /// A client for `endpoint` that sends requests through `transport`.
+    pub fn new(endpoint: Endpoint, transport: Arc<dyn Transport>) -> Self {
+        Self::with_backend(Backend::Cloud(endpoint), Some(transport))
+    }
+
+    pub(crate) fn with_backend(backend: Backend, transport: Option<Arc<dyn Transport>>) -> Self {
         Self {
-            http: reqwest::Client::new(),
-            provider,
-            default_model: None,
-            default_dimensions: None,
-            default_input_type: None,
-            default_backoff: None,
-            default_timeout: DEFAULT_TIMEOUT,
+            backend,
+            transport,
+            defaults: Defaults {
+                model: None,
+                dimensions: None,
+                input_type: None,
+                truncate: None,
+                backoff: None,
+                timeout: DEFAULT_TIMEOUT,
+            },
             fallbacks: Vec::new(),
         }
     }
 
-    /// Create a client for OpenAI embedding models.
-    pub fn openai(api_key: impl Into<String>) -> Self {
-        Self::new_with_provider(ProviderKind::OpenAi {
-            api_key: api_key.into(),
-            base_url: crate::provider::OPENAI_BASE_URL.into(),
-        })
+    #[cfg(feature = "reqwest")]
+    constructors! {
+        openai, openai_compatible, "OpenAI embeddings";
+        cohere, cohere_compatible, "Cohere v2 embed";
+        gemini, gemini_compatible, "Gemini embedContent";
+        voyage, voyage_compatible, "Voyage AI embeddings";
+        jina, jina_compatible, "Jina AI embeddings";
+        mistral, mistral_compatible, "Mistral embeddings";
     }
 
-    /// Create a client for any OpenAI-compatible embedding API.
-    pub fn openai_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self::new_with_provider(ProviderKind::OpenAi {
-            api_key: api_key.into(),
-            base_url: base_url.into(),
-        })
+    /// Default model for every call.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.defaults.model = Some(model.into());
+        self
     }
 
-    /// Create a client for Cohere embedding models.
-    pub fn cohere(api_key: impl Into<String>) -> Self {
-        Self::new_with_provider(ProviderKind::Cohere {
-            api_key: api_key.into(),
-            base_url: "https://api.cohere.com/v2".into(),
-        })
+    /// Default output width, for models that can shorten their vectors.
+    pub fn with_dimensions(mut self, dimensions: u32) -> Self {
+        self.defaults.dimensions = Some(dimensions);
+        self
     }
 
-    /// Create a client for any Cohere-compatible embedding API.
-    pub fn cohere_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self::new_with_provider(ProviderKind::Cohere {
-            api_key: api_key.into(),
-            base_url: base_url.into(),
-        })
+    /// Default input type.
+    pub fn with_input_type(mut self, input_type: InputType) -> Self {
+        self.defaults.input_type = Some(input_type);
+        self
     }
 
-    /// Create a client for Google Gemini embedding models.
-    pub fn gemini(api_key: impl Into<String>) -> Self {
-        Self::new_with_provider(ProviderKind::Gemini {
-            api_key: api_key.into(),
-            base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
-        })
+    /// Default handling of inputs longer than the model reads.
+    pub fn with_truncate(mut self, truncate: Truncate) -> Self {
+        self.defaults.truncate = Some(truncate);
+        self
     }
 
-    /// Create a client for any Gemini-compatible embedding API.
-    pub fn gemini_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self::new_with_provider(ProviderKind::Gemini {
-            api_key: api_key.into(),
-            base_url: base_url.into(),
-        })
+    /// Retry transient failures (408, 429, 500, 502, 503, 504, 529,
+    /// connection errors) with this backoff. Without it nothing is retried.
+    pub fn with_retry(mut self, backoff: Backoff) -> Self {
+        self.defaults.backoff = Some(backoff);
+        self
     }
 
-    /// Create a client for Voyage AI embedding models.
-    pub fn voyage(api_key: impl Into<String>) -> Self {
-        Self::new_with_provider(ProviderKind::Voyage {
-            api_key: api_key.into(),
-            base_url: "https://api.voyageai.com/v1".into(),
-        })
+    /// Time limit of one call, retries and fallbacks included. Default 60 s.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.defaults.timeout = timeout;
+        self
     }
 
-    /// Create a client for any Voyage-compatible embedding API.
-    pub fn voyage_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self::new_with_provider(ProviderKind::Voyage {
-            api_key: api_key.into(),
-            base_url: base_url.into(),
-        })
-    }
-
-    /// Create a client for Jina AI embedding models.
-    pub fn jina(api_key: impl Into<String>) -> Self {
-        Self::new_with_provider(ProviderKind::Jina {
-            api_key: api_key.into(),
-            base_url: "https://api.jina.ai/v1".into(),
-        })
-    }
-
-    /// Create a client for any Jina-compatible embedding API.
-    pub fn jina_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self::new_with_provider(ProviderKind::Jina {
-            api_key: api_key.into(),
-            base_url: base_url.into(),
-        })
-    }
-
-    /// Create a client for Mistral embedding models (`mistral-embed`, `codestral-embed-2505`).
-    pub fn mistral(api_key: impl Into<String>) -> Self {
-        Self::new_with_provider(ProviderKind::Mistral {
-            api_key: api_key.into(),
-            base_url: "https://api.mistral.ai/v1".into(),
-        })
-    }
-
-    /// Create a client for any Mistral-compatible embedding API.
-    pub fn mistral_compatible(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
-        Self::new_with_provider(ProviderKind::Mistral {
-            api_key: api_key.into(),
-            base_url: base_url.into(),
-        })
-    }
-
-    /// Create a client for local model inference using candle.
+    /// Chain a fallback. When this client fails with a transient error
+    /// (after its retries), the call goes to the fallbacks in order; the
+    /// first error is returned if all fail. Client errors (400, 401, 403,
+    /// 422, unsupported options) are returned at once.
     ///
-    /// The model weights are downloaded from HuggingFace Hub on first use
-    /// and cached locally. The tokenizer is embedded in the binary.
-    ///
-    /// Available models: `"all-MiniLM-L6-v2"`, `"all-MiniLM-L12-v2"`, `"bge-small-en-v1.5"`, `"gte-small"`
-    ///
-    /// ```rust,no_run
-    /// # async fn run() -> embedrs::Result<()> {
-    /// let client = embedrs::Client::local("all-MiniLM-L6-v2")?;
-    /// let result = client.embed(vec!["hello world".into()]).await?;
-    /// println!("dimensions: {}", result.embeddings[0].len()); // 384
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[cfg(feature = "local")]
-    pub fn local(model_name: &str) -> Result<Self> {
-        let model_def = crate::local::get_model(model_name)
-            .ok_or_else(|| Error::UnknownModel(model_name.to_string()))?;
-
-        Ok(Self::from_local_model(model_def))
-    }
-
-    /// create a client from a known model definition (infallible)
-    #[cfg(feature = "local")]
-    pub(crate) fn from_local_model(model_def: &'static crate::local::ModelDefinition) -> Self {
-        Self::new_with_provider(ProviderKind::Local {
-            model_def,
-            engine: std::sync::Arc::new(tokio::sync::OnceCell::new()),
-        })
-        .with_model(model_def.name)
-    }
-
-    /// Set the default model for all embedding requests.
-    pub fn with_model(self, model: impl Into<String>) -> Self {
-        Self {
-            default_model: Some(model.into()),
-            ..self
-        }
-    }
-
-    /// Set the default output dimensions.
-    pub fn with_dimensions(self, dimensions: u32) -> Self {
-        Self {
-            default_dimensions: Some(dimensions),
-            ..self
-        }
-    }
-
-    /// Set the default input type for all requests.
-    pub fn with_input_type(self, input_type: InputType) -> Self {
-        Self {
-            default_input_type: Some(input_type),
-            ..self
-        }
-    }
-
-    /// Retry with exponential backoff on 408, 429, 500, 502, 503, 504, 529
-    /// and on connection errors.
-    pub fn with_retry_backoff(self, config: BackoffConfig) -> Self {
-        Self {
-            default_backoff: Some(config),
-            ..self
-        }
-    }
-
-    /// Set the overall request timeout. Default: 60 seconds.
-    pub fn with_timeout(self, timeout: Duration) -> Self {
-        Self {
-            default_timeout: timeout,
-            ..self
-        }
-    }
-
-    /// Chain a fallback client. If the primary provider fails with any error
-    /// (after its retries, if backoff is set), the request goes to the
-    /// fallbacks in order, and the primary's error is returned if all fail.
-    ///
-    /// A fallback sends its own model and dimensions (set them with
-    /// [`Client::with_model`] and [`Client::with_dimensions`] on the fallback),
-    /// never the primary's. The input type is shared.
+    /// A fallback uses its own model and dimensions, never this client's;
+    /// the input type is shared.
     pub fn with_fallback(mut self, fallback: Client) -> Self {
         self.fallbacks.push(fallback);
         self
     }
 
-    /// Replace the underlying [`reqwest::Client`].
-    ///
-    /// Use this to share one connection pool across providers (saves
-    /// keep-alive sockets when a fallback chain spans multiple hosts),
-    /// or to inject custom TLS, proxies, headers, or transport timeouts.
-    ///
-    /// The replacement is propagated to every fallback **registered up
-    /// to this point**; call this after `with_fallback(...)` if you want
-    /// the share to cover them.
-    ///
-    /// The reqwest-level timeout still composes with [`Self::with_timeout`]:
-    /// the smaller of the two wins on any given request.
-    pub fn with_http_client(mut self, http: reqwest::Client) -> Self {
+    /// Send requests through `transport`, here and in every fallback
+    /// registered so far.
+    pub fn with_transport(mut self, transport: Arc<dyn Transport>) -> Self {
         for fb in &mut self.fallbacks {
-            fb.http = http.clone();
+            fb.transport = Some(transport.clone());
         }
-        self.http = http;
+        self.transport = Some(transport);
         self
     }
 
-    /// Begin an embedding request for one or more texts.
+    /// Embed the texts in one request (one model run for local models).
     ///
-    /// ```rust,no_run
-    /// # async fn run() -> embedrs::Result<()> {
-    /// let client = embedrs::Client::openai("sk-...");
-    /// let result = client.embed(vec!["hello world".into()]).await?;
-    /// println!("dimensions: {}", result.embeddings[0].len());
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn embed(&self, texts: Vec<String>) -> EmbedBuilder<'_> {
-        EmbedBuilder::new(self, texts)
+    /// Takes `Vec<String>`, `&[&str]`, `&[String]`, `[&str; N]` and `&str`.
+    pub fn embed<'t>(&self, texts: impl Into<Inputs<'t>>) -> EmbedBuilder<'_, 't> {
+        EmbedBuilder::new(self, texts.into())
     }
 
-    /// Begin a batch embedding request that splits texts into chunks and processes
-    /// them concurrently with configurable concurrency.
+    /// Embed any number of texts: split into requests the endpoint accepts
+    /// (by count, and by tokens where the endpoint has a cap) and sent
+    /// concurrently.
+    pub fn embed_batch<'t>(&self, texts: impl Into<Inputs<'t>>) -> BatchBuilder<'_, 't> {
+        BatchBuilder::new(self, texts.into())
+    }
+
+    /// Build the HTTP request for `texts` without sending it, for code that
+    /// brings its own HTTP client: blocking code, other runtimes, wasm.
+    /// Send [`Prepared::request`] and pass the answer to [`Prepared::finish`].
+    /// No retries, no fallbacks, no timeout.
     ///
-    /// ```rust,no_run
-    /// # async fn run() -> embedrs::Result<()> {
-    /// let client = embedrs::Client::openai("sk-...");
-    /// let texts: Vec<String> = (0..5000).map(|i| format!("text {i}")).collect();
-    /// let result = client.embed_batch(texts)
-    ///     .concurrency(5)
-    ///     .await?;
-    /// println!("total embeddings: {}", result.embeddings.len());
+    /// ```rust
+    /// # fn run() -> embedrs::Result<()> {
+    /// use std::sync::Arc;
+    /// # struct Unused;
+    /// # impl embedrs::transport::Transport for Unused {
+    /// #   fn send(&self, _: embedrs::transport::HttpRequest) -> embedrs::transport::BoxFuture<'_, Result<embedrs::transport::HttpResponse, embedrs::transport::TransportError>> { unimplemented!() }
+    /// #   fn sleep(&self, _: std::time::Duration) -> embedrs::transport::BoxFuture<'static, ()> { unimplemented!() }
+    /// # }
+    /// let client = embedrs::Client::new(
+    ///     embedrs::Endpoint::openai_compatible("sk-...", "http://localhost:8080/v1"),
+    ///     Arc::new(Unused),
+    /// );
+    /// let prepared = client.prepare(["hello"])?;
+    /// assert_eq!(prepared.request().url, "http://localhost:8080/v1/embeddings");
+    /// // send it with any HTTP client, then:
+    /// let answer = embedrs::transport::HttpResponse::new(
+    ///     200,
+    ///     vec![],
+    ///     br#"{"data":[{"index":0,"embedding":[0.5,0.5]}]}"#.to_vec(),
+    /// );
+    /// let result = prepared.finish(answer)?;
+    /// assert_eq!(&result[0], &[0.5, 0.5]);
     /// # Ok(())
     /// # }
+    /// # run().unwrap();
     /// ```
-    pub fn embed_batch(&self, texts: Vec<String>) -> crate::batch::BatchBuilder<'_> {
-        crate::batch::BatchBuilder::new(self, texts)
+    pub fn prepare<'t>(&self, texts: impl Into<Inputs<'t>>) -> Result<Prepared> {
+        self.embed(texts).prepare()
+    }
+
+    pub(crate) fn sleep(&self, d: Duration) -> BoxFuture<'static, ()> {
+        match &self.transport {
+            Some(t) => t.sleep(d),
+            None => Box::pin(crate::rt::timer::sleep(d)),
+        }
+    }
+
+    pub(crate) fn provider(&self) -> &'static str {
+        match &self.backend {
+            Backend::Cloud(ep) => ep.provider(),
+            #[cfg(feature = "local")]
+            Backend::Local(_) => "local",
+        }
+    }
+
+    pub(crate) fn default_model(&self) -> &str {
+        match &self.backend {
+            Backend::Cloud(ep) => ep.default_model(),
+            #[cfg(feature = "local")]
+            Backend::Local(h) => h.name(),
+        }
+    }
+}
+
+/// Anything that turns texts into vectors: [`Client`], or your own backend.
+///
+/// This is the seam for crates built on embedrs (such as chunkers) and for
+/// test doubles: take `&dyn Embed` and any backend plugs in.
+pub trait Embed: Send + Sync {
+    /// Embed `texts` in input order.
+    fn embed_texts<'a>(
+        &'a self,
+        texts: &'a [&'a str],
+        input_type: Option<InputType>,
+    ) -> BoxFuture<'a, Result<EmbedResult>>;
+}
+
+impl Embed for Client {
+    /// [`Client::embed_batch`] with the client's defaults.
+    fn embed_texts<'a>(
+        &'a self,
+        texts: &'a [&'a str],
+        input_type: Option<InputType>,
+    ) -> BoxFuture<'a, Result<EmbedResult>> {
+        let mut b = self.embed_batch(texts);
+        if let Some(t) = input_type {
+            b = b.input_type(t);
+        }
+        Box::pin(std::future::IntoFuture::into_future(b))
     }
 }
 
@@ -293,217 +262,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_builder_openai() {
-        let client = Client::openai("test-key")
-            .with_model("text-embedding-3-large")
+    fn embed_is_object_safe() {
+        fn take(_: &dyn Embed) {}
+        let c = Client::new(Endpoint::openai("k"), crate::request::tests::fake(vec![]));
+        take(&c);
+    }
+
+    #[test]
+    fn defaults_and_fallbacks() {
+        let t = crate::request::tests::fake(vec![]);
+        let c = Client::new(Endpoint::cohere("k"), t.clone())
+            .with_model("embed-v4.0")
             .with_dimensions(256)
-            .with_input_type(InputType::SearchDocument);
-
-        assert_eq!(
-            client.default_model.as_deref(),
-            Some("text-embedding-3-large")
-        );
-        assert_eq!(client.default_dimensions, Some(256));
-        assert_eq!(client.default_input_type, Some(InputType::SearchDocument));
+            .with_input_type(InputType::SearchDocument)
+            .with_truncate(Truncate::End)
+            .with_retry(Backoff::new())
+            .with_timeout(Duration::from_secs(5))
+            .with_fallback(Client::new(Endpoint::voyage("k"), t.clone()));
+        assert_eq!(c.defaults.model.as_deref(), Some("embed-v4.0"));
+        assert_eq!(c.defaults.dimensions, Some(256));
+        assert_eq!(c.defaults.truncate, Some(Truncate::End));
+        assert_eq!(c.defaults.timeout, Duration::from_secs(5));
+        assert_eq!(c.fallbacks.len(), 1);
+        assert_eq!(c.provider(), "cohere");
+        assert_eq!(c.fallbacks[0].default_model(), "voyage-4-large");
+        let other = crate::request::tests::fake(vec![]);
+        let c = c.with_transport(other.clone());
+        assert!(Arc::ptr_eq(
+            c.fallbacks[0].transport.as_ref().unwrap(),
+            &other
+        ));
     }
 
+    #[cfg(feature = "reqwest")]
     #[test]
-    fn client_openai_compatible() {
-        let client = Client::openai_compatible("key", "https://api.deepseek.com/v1");
-        match &client.provider {
-            ProviderKind::OpenAi { base_url, .. } => {
-                assert_eq!(base_url, "https://api.deepseek.com/v1");
-            }
-            _ => panic!("expected OpenAi provider"),
-        }
-    }
-
-    #[test]
-    fn client_cohere() {
-        let client = Client::cohere("key");
-        match &client.provider {
-            ProviderKind::Cohere { base_url, .. } => {
-                assert_eq!(base_url, "https://api.cohere.com/v2");
-            }
-            _ => panic!("expected Cohere provider"),
-        }
-    }
-
-    #[test]
-    fn client_cohere_compatible() {
-        let client = Client::cohere_compatible("key", "https://proxy.example.com/v2");
-        match &client.provider {
-            ProviderKind::Cohere { base_url, .. } => {
-                assert_eq!(base_url, "https://proxy.example.com/v2");
-            }
-            _ => panic!("expected Cohere provider"),
-        }
-    }
-
-    #[test]
-    fn client_gemini() {
-        let client = Client::gemini("key");
-        match &client.provider {
-            ProviderKind::Gemini { base_url, .. } => {
-                assert_eq!(base_url, "https://generativelanguage.googleapis.com/v1beta");
-            }
-            _ => panic!("expected Gemini provider"),
-        }
-    }
-
-    #[test]
-    fn client_gemini_compatible() {
-        let client = Client::gemini_compatible("key", "https://proxy.example.com/v1beta");
-        match &client.provider {
-            ProviderKind::Gemini { base_url, .. } => {
-                assert_eq!(base_url, "https://proxy.example.com/v1beta");
-            }
-            _ => panic!("expected Gemini provider"),
-        }
-    }
-
-    #[test]
-    fn client_voyage() {
-        let client = Client::voyage("key");
-        match &client.provider {
-            ProviderKind::Voyage { base_url, .. } => {
-                assert_eq!(base_url, "https://api.voyageai.com/v1");
-            }
-            _ => panic!("expected Voyage provider"),
-        }
-    }
-
-    #[test]
-    fn client_voyage_compatible() {
-        let client = Client::voyage_compatible("key", "https://proxy.example.com/v1");
-        match &client.provider {
-            ProviderKind::Voyage { base_url, .. } => {
-                assert_eq!(base_url, "https://proxy.example.com/v1");
-            }
-            _ => panic!("expected Voyage provider"),
-        }
-    }
-
-    #[test]
-    fn client_jina() {
-        let client = Client::jina("key");
-        match &client.provider {
-            ProviderKind::Jina { base_url, .. } => {
-                assert_eq!(base_url, "https://api.jina.ai/v1");
-            }
-            _ => panic!("expected Jina provider"),
-        }
-    }
-
-    #[test]
-    fn client_jina_compatible() {
-        let client = Client::jina_compatible("key", "https://proxy.example.com/v1");
-        match &client.provider {
-            ProviderKind::Jina { base_url, .. } => {
-                assert_eq!(base_url, "https://proxy.example.com/v1");
-            }
-            _ => panic!("expected Jina provider"),
-        }
-    }
-
-    #[test]
-    fn default_timeout_60s() {
-        let client = Client::openai("key");
-        assert_eq!(client.default_timeout, Duration::from_secs(60));
-    }
-
-    #[test]
-    fn custom_timeout() {
-        let client = Client::openai("key").with_timeout(Duration::from_secs(120));
-        assert_eq!(client.default_timeout, Duration::from_secs(120));
-    }
-
-    #[test]
-    fn client_with_retry_backoff() {
-        let client = Client::openai("key").with_retry_backoff(BackoffConfig::default());
-        assert!(client.default_backoff.is_some());
-    }
-
-    #[test]
-    fn embed_builder_defaults() {
-        let client = Client::openai("key")
-            .with_model("text-embedding-3-large")
-            .with_dimensions(256)
-            .with_input_type(InputType::SearchQuery);
-
-        let builder = client.embed(vec!["test".into()]);
-        assert_eq!(builder.model, None);
-        assert_eq!(builder.dimensions, None);
-        assert_eq!(builder.input_type, None);
-        assert_eq!(builder.texts.len(), 1);
-    }
-
-    #[test]
-    fn embed_builder_overrides() {
-        let client = Client::openai("key");
-        let builder = client
-            .embed(vec!["test".into()])
-            .model("text-embedding-3-large")
-            .dimensions(512)
-            .input_type(InputType::SearchDocument)
-            .timeout(Duration::from_secs(30));
-
-        assert_eq!(builder.model.as_deref(), Some("text-embedding-3-large"));
-        assert_eq!(builder.dimensions, Some(512));
-        assert_eq!(builder.input_type, Some(InputType::SearchDocument));
-        assert_eq!(builder.timeout, Duration::from_secs(30));
-    }
-
-    #[test]
-    fn embed_builder_backoff() {
-        let client = Client::openai("key")
-            .with_retry_backoff(BackoffConfig::default())
-            .with_timeout(Duration::from_secs(30));
-
-        let builder = client.embed(vec!["test".into()]);
-        assert!(builder.backoff.is_none());
-        assert_eq!(builder.timeout, Duration::from_secs(30));
-
-        let builder = builder
-            .retry_backoff(BackoffConfig {
-                max_http_retries: 5,
-                ..Default::default()
-            })
-            .timeout(Duration::from_secs(90));
-        assert_eq!(builder.backoff.as_ref().unwrap().max_http_retries, 5);
-        assert_eq!(builder.timeout, Duration::from_secs(90));
-    }
-
-    #[test]
-    fn client_with_fallback() {
-        let client = Client::openai("key").with_fallback(Client::cohere("cohere-key"));
-        assert_eq!(client.fallbacks.len(), 1);
-    }
-
-    #[test]
-    fn client_with_multiple_fallbacks() {
-        let client = Client::openai("key")
-            .with_fallback(Client::cohere("cohere-key"))
-            .with_fallback(Client::voyage("voyage-key"));
-        assert_eq!(client.fallbacks.len(), 2);
-    }
-
-    #[test]
-    fn embed_result_debug_clone() {
-        let result = EmbedResult {
-            embeddings: vec![vec![1.0, 2.0, 3.0]],
-            usage: Usage {
-                total_tokens: 10,
-                #[cfg(feature = "cost-tracking")]
-                cost: None,
-            },
-            model: "text-embedding-3-small".into(),
-        };
-        let cloned = result.clone();
-        assert_eq!(cloned.embeddings.len(), 1);
-        assert_eq!(cloned.usage.total_tokens, 10);
-        assert_eq!(cloned.model, "text-embedding-3-small");
-        let debug = format!("{result:?}");
-        assert!(debug.contains("EmbedResult"));
+    fn named_constructors_share_one_transport() {
+        let a = Client::openai("k");
+        let b = Client::gemini_compatible("k", "http://x");
+        assert!(Arc::ptr_eq(
+            a.transport.as_ref().unwrap(),
+            b.transport.as_ref().unwrap()
+        ));
+        assert_eq!(b.provider(), "gemini");
+        assert_eq!(a.default_model(), "text-embedding-3-small");
     }
 }

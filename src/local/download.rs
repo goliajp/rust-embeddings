@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use hf_hub::Cache;
 use hf_hub::api::tokio::ApiBuilder;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// Return the local path of a model file, downloading it into the Hugging Face
 /// cache (`HF_HOME`, default `~/.cache/huggingface`) on first use.
@@ -29,8 +29,8 @@ pub(crate) async fn ensure_model_file(hf_repo: &str, hf_filename: &str) -> Resul
         Ok(file)
     })
     .await
-    .map_err(|e| Error::Other(format!("model download task failed: {e}")))?
-    .map_err(|e| Error::Other(format!("failed to lock the model cache: {e}")))?;
+    .map_err(|e| super::fail(format!("model download task failed: {e}")))?
+    .map_err(|e| super::fail(format!("failed to lock the model cache: {e}")))?;
 
     if let Some(path) = cache.model(hf_repo.to_string()).get(hf_filename) {
         return Ok(path);
@@ -39,12 +39,12 @@ pub(crate) async fn ensure_model_file(hf_repo: &str, hf_filename: &str) -> Resul
     let api = ApiBuilder::from_env()
         .with_progress(false)
         .build()
-        .map_err(|e| Error::Other(format!("failed to create hf-hub api: {e}")))?;
+        .map_err(|e| super::fail(format!("failed to create hf-hub api: {e}")))?;
     let path = api
         .model(hf_repo.to_string())
         .get(hf_filename)
         .await
-        .map_err(|e| Error::Other(format!("failed to download {hf_repo}/{hf_filename}: {e}")))?;
+        .map_err(|e| super::fail(format!("failed to download {hf_repo}/{hf_filename}: {e}")))?;
     drop(lock);
     Ok(path)
 }

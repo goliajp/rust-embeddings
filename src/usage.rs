@@ -1,26 +1,46 @@
-//! Token usage and (optional) cost accounting for embedding requests.
+//! Token usage and cost of a call.
 
-/// Token usage information from an embedding request.
-#[derive(Debug, Clone, Default)]
+/// Tokens a call consumed and what they cost.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Usage {
-    /// Number of tokens consumed by the input texts.
-    pub total_tokens: u32,
-    /// Estimated cost in USD. `None` if the model has no pricing data.
-    #[cfg(feature = "cost-tracking")]
+    /// Tokens the provider reported; `None` when it reported no count.
+    pub total_tokens: Option<u64>,
+    /// Estimated cost in USD from `tiktoken`'s price table (feature
+    /// `cost-tracking`); `None` without the feature, for a model with no
+    /// price, or when the token count is unknown.
     pub cost: Option<f64>,
 }
 
 impl Usage {
-    pub(crate) fn accumulate(&mut self, tokens: u32) {
-        self.total_tokens += tokens;
+    /// A usage record, for [`Embed`](crate::Embed) implementations outside embedrs.
+    pub fn new(total_tokens: Option<u64>, cost: Option<f64>) -> Self {
+        Self { total_tokens, cost }
     }
 
-    #[cfg(feature = "cost-tracking")]
-    pub(crate) fn accumulate_cost(&mut self, cost: Option<f64>) {
-        match (self.cost, cost) {
-            (Some(a), Some(b)) => self.cost = Some(a + b),
-            (None, Some(b)) => self.cost = Some(b),
-            _ => {}
+    /// Usage of one response; an unknown count has no cost, never a cost of zero.
+    pub(crate) fn priced(model: &str, tokens: Option<u64>) -> Self {
+        #[cfg(feature = "cost-tracking")]
+        let cost = tokens.and_then(|t| tiktoken::pricing::estimate_cost(model, t, 0));
+        #[cfg(not(feature = "cost-tracking"))]
+        let cost = {
+            let _ = model;
+            None
+        };
+        Self {
+            total_tokens: tokens,
+            cost,
+        }
+    }
+
+    /// Sum of two parts of one batch. An unknown part makes the sum unknown.
+    pub(crate) fn add(&self, other: &Usage) -> Usage {
+        Usage {
+            total_tokens: self
+                .total_tokens
+                .zip(other.total_tokens)
+                .map(|(a, b)| a + b),
+            cost: self.cost.zip(other.cost).map(|(a, b)| a + b),
         }
     }
 }
@@ -30,62 +50,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_usage() {
-        let usage = Usage::default();
-        assert_eq!(usage.total_tokens, 0);
+    fn unknown_parts_poison_the_sum() {
+        let a = Usage::new(Some(3), Some(0.5));
+        let b = Usage::new(Some(4), Some(0.25));
+        assert_eq!(a.add(&b), Usage::new(Some(7), Some(0.75)));
+        assert_eq!(a.add(&Usage::new(None, None)), Usage::new(None, None));
+        assert_eq!(a.add(&Usage::new(Some(1), None)), Usage::new(Some(4), None));
     }
 
     #[test]
-    fn accumulate_single() {
-        let mut usage = Usage::default();
-        usage.accumulate(100);
-        assert_eq!(usage.total_tokens, 100);
-    }
-
-    #[test]
-    fn accumulate_multiple() {
-        let mut usage = Usage::default();
-        usage.accumulate(100);
-        usage.accumulate(200);
-        assert_eq!(usage.total_tokens, 300);
-    }
-
-    #[test]
-    fn clone_usage() {
-        let mut usage = Usage::default();
-        usage.accumulate(10);
-        let cloned = usage.clone();
-        assert_eq!(cloned.total_tokens, 10);
-    }
-
-    #[test]
-    fn debug_format() {
-        let usage = Usage::default();
-        let debug = format!("{usage:?}");
-        assert!(debug.contains("Usage"));
-        assert!(debug.contains("total_tokens"));
-    }
-
-    #[cfg(feature = "cost-tracking")]
-    #[test]
-    fn cost_tracking_accumulate() {
-        let mut usage = Usage::default();
-        assert_eq!(usage.cost, None);
-
-        usage.accumulate_cost(Some(0.001));
-        assert_eq!(usage.cost, Some(0.001));
-
-        usage.accumulate_cost(Some(0.002));
-        assert!((usage.cost.unwrap() - 0.003).abs() < f64::EPSILON);
-
-        usage.accumulate_cost(None);
-        assert!((usage.cost.unwrap() - 0.003).abs() < f64::EPSILON);
-    }
-
-    #[cfg(feature = "cost-tracking")]
-    #[test]
-    fn cost_tracking_default_none() {
-        let usage = Usage::default();
-        assert_eq!(usage.cost, None);
+    fn unknown_count_has_no_cost() {
+        let u = Usage::priced("text-embedding-3-small", None);
+        assert_eq!(u, Usage::default());
+        let u = Usage::priced("text-embedding-3-small", Some(10));
+        assert_eq!(u.total_tokens, Some(10));
+        #[cfg(feature = "cost-tracking")]
+        assert!(u.cost.unwrap() > 0.0);
+        #[cfg(not(feature = "cost-tracking"))]
+        assert_eq!(u.cost, None);
     }
 }

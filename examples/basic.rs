@@ -26,12 +26,12 @@ async fn main() -> embedrs::Result<()> {
 
     // display results
     println!("model: {}", result.model);
-    println!("texts embedded: {}", result.embeddings.len());
-    println!("dimensions: {}", result.embeddings[0].len());
-    println!("total tokens: {}", result.usage.total_tokens);
+    println!("texts embedded: {}", result.len());
+    println!("dimensions: {}", result[0].len());
+    println!("total tokens: {:?}", result.usage.total_tokens);
 
     // show first few values of each embedding
-    for (i, embedding) in result.embeddings.iter().enumerate() {
+    for (i, embedding) in result.iter().enumerate() {
         let preview: Vec<String> = embedding
             .iter()
             .take(5)

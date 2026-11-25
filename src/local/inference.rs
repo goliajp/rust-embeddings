@@ -7,7 +7,7 @@ use tokenizers::{Tokenizer, TruncationParams};
 use super::bert::Bert;
 use super::download;
 use super::model::{ModelDefinition, PoolingStrategy};
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 // texts are sorted by token count and run in groups of this many, so each
 // group is padded only to its own longest text
@@ -34,10 +34,10 @@ impl InferenceEngine {
             // modified while mapped
             let vb = unsafe {
                 VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)
-                    .map_err(|e| Error::Other(format!("failed to load weights: {e}")))?
+                    .map_err(|e| super::fail(format!("failed to load weights: {e}")))?
             };
             let model = Bert::load(vb, &config)
-                .map_err(|e| Error::Other(format!("failed to build model: {e}")))?;
+                .map_err(|e| super::fail(format!("failed to build model: {e}")))?;
             Ok(InferenceEngine {
                 model,
                 tokenizer,
@@ -45,7 +45,7 @@ impl InferenceEngine {
             })
         })
         .await
-        .map_err(|e| Error::Other(format!("model loading task failed: {e}")))??;
+        .map_err(|e| super::fail(format!("model loading task failed: {e}")))??;
 
         Ok(Arc::new(engine))
     }
@@ -63,7 +63,7 @@ impl InferenceEngine {
         let encodings = self
             .tokenizer
             .encode_batch(inputs, true)
-            .map_err(|e| Error::Other(format!("tokenization failed: {e}")))?;
+            .map_err(|e| super::fail(format!("tokenization failed: {e}")))?;
         let total_tokens: u32 = encodings.iter().map(|e| e.len() as u32).sum();
 
         let mut order: Vec<usize> = (0..encodings.len()).collect();
@@ -90,21 +90,21 @@ impl InferenceEngine {
         let output = self
             .model
             .forward(&token_ids, padded.then_some(&attention_mask))
-            .map_err(|e| Error::Other(format!("forward pass failed: {e}")))?;
+            .map_err(|e| super::fail(format!("forward pass failed: {e}")))?;
         let pooled = match self.pooling {
             PoolingStrategy::MeanPooling => mean_pool(&output, &attention_mask)?,
             PoolingStrategy::ClsToken => cls_pool(&output)?,
         };
         l2_normalize(&pooled)?
             .to_vec2::<f32>()
-            .map_err(|e| Error::Other(format!("tensor extraction failed: {e}")))
+            .map_err(|e| super::fail(format!("tensor extraction failed: {e}")))
     }
 }
 
 pub(super) fn load_tokenizer(def: &ModelDefinition) -> Result<Tokenizer> {
     let bytes = decompress_zstd(def.tokenizer_data)?;
     let mut tokenizer = Tokenizer::from_bytes(&bytes)
-        .map_err(|e| Error::Other(format!("failed to load tokenizer: {e}")))?;
+        .map_err(|e| super::fail(format!("failed to load tokenizer: {e}")))?;
     // the embedded tokenizer files pad every text to a fixed length; padding is
     // done per group instead, and truncation follows the model's own limit
     tokenizer.with_padding(None);
@@ -113,7 +113,7 @@ pub(super) fn load_tokenizer(def: &ModelDefinition) -> Result<Tokenizer> {
             max_length: def.max_seq_length,
             ..Default::default()
         }))
-        .map_err(|e| Error::Other(format!("failed to set truncation: {e}")))?;
+        .map_err(|e| super::fail(format!("failed to set truncation: {e}")))?;
     Ok(tokenizer)
 }
 
@@ -129,7 +129,7 @@ fn padded_tensor(
         row[..ids.len()].copy_from_slice(ids);
     }
     Tensor::from_vec(flat, (batch.len(), max_len), device)
-        .map_err(|e| Error::Other(format!("tensor creation failed: {e}")))
+        .map_err(|e| super::fail(format!("tensor creation failed: {e}")))
 }
 
 fn cls_pool(output: &Tensor) -> Result<Tensor> {
@@ -137,13 +137,13 @@ fn cls_pool(output: &Tensor) -> Result<Tensor> {
     output
         .narrow(1, 0, 1)
         .and_then(|t| t.squeeze(1))
-        .map_err(|e| Error::Other(format!("cls pooling failed: {e}")))
+        .map_err(|e| super::fail(format!("cls pooling failed: {e}")))
 }
 
 fn mean_pool(output: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
     let (_batch, _seq, hidden) = output
         .dims3()
-        .map_err(|e| Error::Other(format!("unexpected tensor shape: {e}")))?;
+        .map_err(|e| super::fail(format!("unexpected tensor shape: {e}")))?;
 
     let mask = attention_mask
         .unsqueeze(2)
@@ -155,23 +155,23 @@ fn mean_pool(output: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
                 hidden,
             ))
         })
-        .map_err(|e| Error::Other(format!("mask broadcast failed: {e}")))?;
+        .map_err(|e| super::fail(format!("mask broadcast failed: {e}")))?;
 
     let masked = output
         .mul(&mask)
-        .map_err(|e| Error::Other(format!("masked mul failed: {e}")))?;
+        .map_err(|e| super::fail(format!("masked mul failed: {e}")))?;
 
     let summed = masked
         .sum(1)
-        .map_err(|e| Error::Other(format!("sum failed: {e}")))?;
+        .map_err(|e| super::fail(format!("sum failed: {e}")))?;
 
     let counts = mask
         .sum(1)
-        .map_err(|e| Error::Other(format!("count sum failed: {e}")))?;
+        .map_err(|e| super::fail(format!("count sum failed: {e}")))?;
 
     summed
         .div(&counts)
-        .map_err(|e| Error::Other(format!("division failed: {e}")))
+        .map_err(|e| super::fail(format!("division failed: {e}")))
 }
 
 fn l2_normalize(tensor: &Tensor) -> Result<Tensor> {
@@ -179,19 +179,19 @@ fn l2_normalize(tensor: &Tensor) -> Result<Tensor> {
         .sqr()
         .and_then(|t| t.sum_keepdim(1))
         .and_then(|t| t.sqrt())
-        .map_err(|e| Error::Other(format!("norm calculation failed: {e}")))?;
+        .map_err(|e| super::fail(format!("norm calculation failed: {e}")))?;
 
     tensor
         .broadcast_div(&norms)
-        .map_err(|e| Error::Other(format!("normalization failed: {e}")))
+        .map_err(|e| super::fail(format!("normalization failed: {e}")))
 }
 
 fn decompress_zstd(data: &[u8]) -> Result<Vec<u8>> {
     let mut output = Vec::new();
     let mut decoder = ruzstd::decoding::StreamingDecoder::new(data)
-        .map_err(|e| Error::Other(format!("zstd decoder init failed: {e}")))?;
+        .map_err(|e| super::fail(format!("zstd decoder init failed: {e}")))?;
     std::io::Read::read_to_end(&mut decoder, &mut output)
-        .map_err(|e| Error::Other(format!("zstd decompression failed: {e}")))?;
+        .map_err(|e| super::fail(format!("zstd decompression failed: {e}")))?;
     Ok(output)
 }
 

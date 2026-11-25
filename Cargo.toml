@@ -13,16 +13,13 @@ readme = "README.md"
 exclude = ["examples/embedding_models/data.json.zst"]
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-tokio = { version = "1", features = ["sync", "time"] }
-thiserror = "2"
-rand = "0.10"
-futures = "0.3"
+# http + tls for the default transport; nothing else outside this crate in the default build
+reqwest = { version = "0.13", optional = true, default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1", optional = true, features = ["time"] }
 tracing = { version = "0.1", optional = true }
 # pricing tables only; no vocabulary is compiled in (tests/cost_tracking.rs checks)
-tiktoken = { version = "5.4", optional = true, default-features = false }
+tiktoken = { version = "5.5", optional = true, default-features = false }
 candle-core = { version = "0.11", optional = true }
 candle-nn = { version = "0.11", optional = true }
 candle-transformers = { version = "0.11", optional = true }
@@ -37,10 +34,12 @@ candle-nn = { version = "0.11", optional = true, features = ["accelerate"] }
 candle-transformers = { version = "0.11", optional = true, features = ["accelerate"] }
 
 [features]
-default = []
+default = ["reqwest"]
+reqwest = ["dep:reqwest", "dep:rustls", "dep:tokio"]
 tracing = ["dep:tracing"]
 cost-tracking = ["dep:tiktoken"]
-local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:hf-hub", "dep:ruzstd"]
+token-count = ["dep:tiktoken", "tiktoken/vocab-cl100k_base"]
+local = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:hf-hub", "dep:ruzstd", "dep:tokio", "tokio/rt", "tokio/sync"]
 
 [[example]]
 name = "benchmark"
@@ -59,6 +58,9 @@ required-features = ["local"]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
 dotenvy = "0.15"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+proptest = "1"
 # for examples/embedding_models (uses zstd compression when re-recording)
 zstd = "0.14"
 
