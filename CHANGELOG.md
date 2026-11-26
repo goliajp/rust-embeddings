@@ -5,6 +5,28 @@ All notable changes to this crate will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Gemini takes `Truncate::End` and `Truncate::Error`, sent as
+  `embedContentConfig.autoTruncate: true` and `false` in every request of a
+  call; until now they returned `Error::Unsupported`.
+
+### Performance
+
+- Local inference: the attention softmax computes
+  e^x with a shorter chain of dependent steps and sums while it writes, score
+  rows are padded to whole kernel panels, the matrix products start from zero
+  or from the bias instead of reading a prefilled output, short products go
+  across all panels per row tile, and transposed operands are packed 8 x 8 at
+  a time. On an Intel i7-10700K, `all-MiniLM-L6-v2`, one 180-word text on one
+  thread: 46.6 → 44.5 ms (fastembed 7.8.0 in the same run: 45.1 ms); with
+  default threads 8.20 → 7.59 ms; 256 mixed texts 215 → 245 /s. On an M4 Pro
+  (matrix products in Accelerate, attention softmax on NEON), against 0.7.0 in
+  the same run: one 180-word text on one thread 8.41 → 7.68 ms, 256 mixed
+  texts with default threads 683 → 719 /s.
+
 ## [0.7.0] - 2026-11-26
 
 ### Upgrading from 0.6
