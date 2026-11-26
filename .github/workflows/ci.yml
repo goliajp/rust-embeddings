@@ -77,7 +77,7 @@ jobs:
       - run: cargo test --features local --lib wordpiece
       - run: cargo test --release --features local --test local_e2e -- --ignored
       # vectors against the recorded reference, with the models the step above downloaded
-      - run: cargo test --release --features local --lib local::
+      - run: "cargo test --release --features local --lib local::"
 
   audit:
     name: audit + deny
