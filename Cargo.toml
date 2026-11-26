@@ -1,6 +1,6 @@
 [package]
 name = "embedrs"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 description = "One async client for text embeddings: OpenAI, Cohere, Gemini, Voyage, Jina and Mistral APIs, plus local BERT models on CPU"
 license = "MIT OR Apache-2.0"
