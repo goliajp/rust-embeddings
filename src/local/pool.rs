@@ -184,7 +184,7 @@ impl Pool {
         let mut spins = 0u32;
         while self.done.load(Acquire) != self.threads - 1 {
             spins = spins.wrapping_add(1);
-            if spins % 64 != 0 || start.elapsed() < SPIN {
+            if !spins.is_multiple_of(64) || start.elapsed() < SPIN {
                 std::hint::spin_loop();
             } else {
                 std::thread::yield_now();
