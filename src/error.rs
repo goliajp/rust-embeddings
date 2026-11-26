@@ -20,7 +20,11 @@ pub enum Error {
         status: u16,
         /// The provider's error message, or the start of the body when it has none.
         message: String,
-        /// The `Retry-After` header, in seconds or as an HTTP date.
+        /// When the provider says to retry: the `Retry-After` header (seconds
+        /// or an HTTP date); without it, the later of OpenAI's
+        /// `x-ratelimit-reset-requests` and `x-ratelimit-reset-tokens`, or
+        /// the `retryDelay` of a Gemini error. Retries wait this long, up to
+        /// the backoff's `max`.
         retry_after: Option<Duration>,
         /// Which provider answered (`"openai"`, `"cohere"`, ...).
         provider: &'static str,

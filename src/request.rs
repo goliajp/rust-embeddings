@@ -308,7 +308,7 @@ async fn cloud(
             Error::Api { retry_after, .. } => *retry_after,
             _ => None,
         };
-        let delay = hint.unwrap_or_else(|| backoff.delay(attempt));
+        let delay = hint.map_or_else(|| backoff.delay(attempt), |h| backoff.cap(h));
         #[cfg(feature = "tracing")]
         tracing::warn!(attempt, delay_ms = delay.as_millis() as u64, error = %err, "retrying");
         client.sleep(delay).await;
@@ -413,6 +413,19 @@ pub(crate) mod tests {
             slept[1..],
             [Duration::from_secs(7), Duration::from_millis(1000)]
         );
+    }
+
+    #[test]
+    fn retry_hints_are_capped_by_the_backoff_max() {
+        let t = fake_full(vec![
+            status(429, &[("retry-after", "120")]),
+            status(429, &[("x-ratelimit-reset-tokens", "6m0s")]),
+            ok(ONE),
+        ]);
+        let c = client(&t).with_retry(Backoff::new().jitter(false).max(Duration::from_secs(5)));
+        block_on(c.embed(["a"]).into_future()).unwrap();
+        let slept = t.slept.lock().unwrap();
+        assert_eq!(slept[1..], [Duration::from_secs(5), Duration::from_secs(5)]);
     }
 
     #[test]
