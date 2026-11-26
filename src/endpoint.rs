@@ -51,6 +51,7 @@ impl Wire {
             // 120k tokens is the request cap of the larger models
             Wire::Voyage => (1000, Some(120_000), None),
             Wire::Cohere => (96, None, None),
+            // the next three input caps are observed, not documented
             Wire::Gemini => (100, None, None),
             Wire::Jina => (2048, None, None),
             Wire::Mistral => (512, None, None),
