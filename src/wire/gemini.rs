@@ -101,7 +101,7 @@ pub(super) fn parse(body: &[u8], n: usize) -> R<Parsed> {
             c.object(|c, key| match key {
                 "promptTokenCount" => {
                     if !c.null()? {
-                        p.total_tokens = Some(c.u64()?);
+                        p.total_tokens = Some(c.count()?);
                     }
                     Ok(())
                 }

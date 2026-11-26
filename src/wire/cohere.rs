@@ -84,7 +84,7 @@ pub(super) fn parse(body: &[u8]) -> R<Parsed> {
                     c.object(|c, key| match key {
                         "input_tokens" => {
                             if !c.null()? {
-                                p.total_tokens = Some(c.u64()?);
+                                p.total_tokens = Some(c.count()?);
                             }
                             Ok(())
                         }
@@ -130,6 +130,17 @@ mod tests {
                 .total_tokens,
             None
         );
+    }
+
+    #[test]
+    fn token_count_as_a_whole_float() {
+        let body = |n: &str| {
+            format!(
+                r#"{{"embeddings":{{"float":[[1]]}},"meta":{{"billed_units":{{"input_tokens":{n}}}}}}}"#
+            )
+        };
+        assert_eq!(parse(body("2.0").as_bytes()).unwrap().total_tokens, Some(2));
+        assert!(parse(body("2.5").as_bytes()).is_err());
     }
 
     #[test]

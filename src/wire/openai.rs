@@ -209,7 +209,7 @@ pub(super) fn parse(body: &[u8], n: usize) -> R<Parsed> {
             c.object(|c, key| match key {
                 "total_tokens" => {
                     if !c.null()? {
-                        p.total_tokens = Some(c.u64()?);
+                        p.total_tokens = Some(c.count()?);
                     }
                     Ok(())
                 }
@@ -276,6 +276,9 @@ mod tests {
         assert_eq!(raw.dim, 2);
         assert_eq!(raw.total_tokens, Some(4));
         assert_eq!(raw.model.as_deref(), Some("x"));
+        let raw =
+            p(r#"{"data":[{"embedding":[1]},{"embedding":[2]}],"usage":{"total_tokens":4.0}}"#);
+        assert_eq!(raw.unwrap().total_tokens, Some(4));
     }
 
     #[test]
@@ -322,6 +325,7 @@ mod tests {
             r#"{"data":[{"embedding":[1]}]} x"#,
             r#"{"model":"m"}"#,
             r#"{"data":[{"embedding":[1]}],"usage":{"total_tokens":-1}}"#,
+            r#"{"data":[{"embedding":[1]}],"usage":{"total_tokens":1.5}}"#,
         ] {
             assert!(p(bad).is_err(), "{bad}");
         }
