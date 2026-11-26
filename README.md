@@ -50,7 +50,19 @@ Everything here was measured on 2026-11-26 on an Apple M4 Pro Mac mini (14 cores
 | 256 texts, 180 words | 40 /s | **103 /s** | 26 /s | 0.15 M/s |
 | 256 texts, mixed | 62 /s | **198 /s** | 26 /s | 0.25 M/s |
 
-Peak memory (largest resident set) of a process that loads one model and embeds the 256 mixed texts: 178 MB for `all-MiniLM-L6-v2` (0.6.2: 1,715 MB), 219 to 234 MB for the 12-layer models (0.6.2: 680 to 1,883 MB). The F32 weight files are mapped and read in place, and texts run without padding in chunks of about 4,096 tokens.
+On Linux (Intel i7-10700K, 8 cores, x86_64 with AVX2, same build settings and texts, under the same kind of benchmark lock; load average at most 12.7) the matrix products run on embedrs' own AVX2/FMA kernels. With default threads embedrs is ahead of fastembed on every row; on one thread ONNX Runtime is faster on single texts and on the batch of 180-word texts.
+
+| Intel i7-10700K, Linux | 0.6.2 | **embedrs** | fastembed | 0.6.2, one thread | **embedrs, one thread** | fastembed, one thread |
+|---|---|---|---|---|---|---|
+| one text, 8 words | 11.9 ms | **1.92 ms** | 1.96 ms | 9.32 ms | **4.58 ms** | 3.89 ms |
+| one text, 40 words | 22.5 ms | **3.03 ms** | 3.67 ms | 21.2 ms | **11.9 ms** | 11.6 ms |
+| one text, 180 words | 46.3 ms | **8.74 ms** | 10.3 ms | 85.2 ms | **51.6 ms** | 46.2 ms |
+| 256 texts, 8 words | 640 /s | **2,208 /s** | 1,196 /s | 224 /s | **341 /s** | 258 /s |
+| 256 texts, 40 words | 171 /s | **529 /s** | 289 /s | 53 /s | **80 /s** | 70 /s |
+| 256 texts, 180 words | 33 /s | **110 /s** | 62 /s | 10 /s | **16 /s** | 17 /s |
+| 256 texts, mixed | 49 /s | **201 /s** | 61 /s | 15 /s | **30 /s** | 17 /s |
+
+Peak memory (largest resident set) of a process that loads one model and embeds the 256 mixed texts: 178 MB for `all-MiniLM-L6-v2` (0.6.2: 1,715 MB), 219 to 234 MB for the 12-layer models (0.6.2: 680 to 1,883 MB). On the Linux machine: 185 MB for `all-MiniLM-L6-v2` (0.6.2: 1,009 MB), 264 MB for `all-MiniLM-L12-v2` (0.6.2: 572 MB). The F32 weight files are mapped and read in place, and texts run without padding in chunks of about 4,096 tokens.
 
 The matrix products run in Accelerate in both 0.6.2 and embedrs; the rest of the forward pass is where the time went. embedrs computes GELU with a vectorised erf (0.6.2 called `erff` once per value), fuses the residual add into layer normalisation, runs attention per text and head without padding or masks, and spreads the rest over the performance cores only when a call is large enough to gain from it. model2vec is faster on every row because it is a different kind of model: a static embedding looks each token up in a table and averages, with no transformer layers. It is listed for scale; on quality it is not a replacement for a transformer model.
 
