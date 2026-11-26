@@ -4,7 +4,7 @@
 
 use std::sync::Mutex;
 
-use super::attention::{self, Scratch};
+use super::attention::{self, Queries, Scratch};
 use super::gemm::linear;
 use super::model::Pooling;
 use super::ops;
@@ -17,6 +17,8 @@ pub(crate) struct Buffers {
     positions: Vec<u32>,
     seqs: Vec<(usize, usize)>,
     x: Vec<f32>,
+    // residual rows of the last layer when only the [CLS] rows go on
+    xc: Vec<f32>,
     qkv: Vec<f32>,
     ctx: Vec<f32>,
     a: Vec<f32>,
@@ -31,6 +33,7 @@ impl Buffers {
             positions: Vec::new(),
             seqs: Vec::new(),
             x: Vec::new(),
+            xc: Vec::new(),
             qkv: Vec::new(),
             ctx: Vec::new(),
             a: Vec::new(),
@@ -88,29 +91,49 @@ pub(crate) fn forward(
         ops::layernorm(block, &w.norm.w, &w.norm.b, eps);
     });
 
-    for l in &w.layers {
+    let last = w.layers.len().saturating_sub(1);
+    for (li, l) in w.layers.iter().enumerate() {
         ops::prefill(par, &mut b.qkv, &l.qkv.b);
         linear(&b.x, t, &l.qkv.w, &mut b.qkv, par);
-        ops::rows(par, &mut b.ctx, h, &|block, _| block.fill(0.0));
-        attention::attention(&b.qkv, &b.seqs, h, c.heads, &mut b.ctx, par, &b.scratch);
+        // with [CLS] pooling, the last layer's output is read at the first
+        // token only: every token still gives keys and values, but the
+        // rest of the layer runs on one row per sequence
+        let cls = pooling == Pooling::Cls && li == last;
+        let (rows, queries) = if cls {
+            (b.seqs.len(), Queries::First)
+        } else {
+            (t, Queries::All)
+        };
+        let ctx = &mut b.ctx[..rows * h];
+        ops::rows(par, ctx, h, &|block, _| block.fill(0.0));
+        attention::attention(&b.qkv, &b.seqs, h, c.heads, queries, ctx, par, &b.scratch);
+        if cls {
+            b.xc.clear();
+            for &(o, _) in &b.seqs {
+                b.xc.extend_from_slice(&b.x[o * h..(o + 1) * h]);
+            }
+        }
+        let residual = if cls { &b.xc } else { &b.x };
 
         // the residual is added after the product, not preloaded into it: (x·W + b) + r
         // stays closer to an f64 pass
-        ops::prefill(par, &mut b.a, &l.out.b);
-        linear(&b.ctx, t, &l.out.w, &mut b.a, par);
-        let x = &b.x;
-        ops::rows(par, &mut b.a, h, &|block, r0| {
-            ops::add_layernorm(block, &x[r0 * h..], &l.norm1.w, &l.norm1.b, eps)
+        let a = &mut b.a[..rows * h];
+        ops::prefill(par, a, &l.out.b);
+        linear(&b.ctx[..rows * h], rows, &l.out.w, a, par);
+        ops::rows(par, a, h, &|block, r0| {
+            ops::add_layernorm(block, &residual[r0 * h..], &l.norm1.w, &l.norm1.b, eps)
         });
 
-        ops::prefill(par, &mut b.f, &l.ff_in.b);
-        linear(&b.a, t, &l.ff_in.w, &mut b.f, par);
-        ops::rows(par, &mut b.f, f, &|block, _| ops::gelu_slice(block));
+        let ff = &mut b.f[..rows * f];
+        ops::prefill(par, ff, &l.ff_in.b);
+        linear(&b.a[..rows * h], rows, &l.ff_in.w, ff, par);
+        ops::rows(par, ff, f, &|block, _| ops::gelu_slice(block));
 
-        ops::prefill(par, &mut b.x, &l.ff_out.b);
-        linear(&b.f, t, &l.ff_out.w, &mut b.x, par);
+        let x = &mut b.x[..rows * h];
+        ops::prefill(par, x, &l.ff_out.b);
+        linear(&b.f[..rows * f], rows, &l.ff_out.w, x, par);
         let a = &b.a;
-        ops::rows(par, &mut b.x, h, &|block, r0| {
+        ops::rows(par, x, h, &|block, r0| {
             ops::add_layernorm(block, &a[r0 * h..], &l.norm2.w, &l.norm2.b, eps)
         });
     }
@@ -118,7 +141,8 @@ pub(crate) fn forward(
     for (k, &(o, s)) in b.seqs.iter().enumerate() {
         let v = &mut out[k * h..(k + 1) * h];
         match pooling {
-            Pooling::Cls => v.copy_from_slice(&b.x[o * h..(o + 1) * h]),
+            // the last layer left sequence k's [CLS] state in row k
+            Pooling::Cls => v.copy_from_slice(&b.x[k * h..(k + 1) * h]),
             Pooling::Mean => {
                 v.fill(0.0);
                 for row in b.x[o * h..(o + s) * h].chunks_exact(h) {
