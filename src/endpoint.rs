@@ -111,10 +111,11 @@ impl Limits {
 /// headers and limits.
 ///
 /// ```rust
-/// // Azure OpenAI: key in an `api-key` header instead of a bearer token
+/// // Azure OpenAI v1 api: key in an `api-key` header instead of a bearer
+/// // token, no api-version parameter, and the deployment name as the model
 /// let azure = embedrs::Endpoint::openai_compatible(
 ///     "",
-///     "https://my-resource.openai.azure.com/openai/deployments/emb",
+///     "https://my-resource.openai.azure.com/openai/v1",
 /// )
 /// .bearer(false)
 /// .header("api-key", "azure-key");
