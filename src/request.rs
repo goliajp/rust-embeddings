@@ -308,7 +308,12 @@ async fn cloud(
             Error::Api { retry_after, .. } => *retry_after,
             _ => None,
         };
-        let delay = hint.map_or_else(|| backoff.delay(attempt), |h| backoff.cap(h));
+        let delay = match hint {
+            // waiting less than the server asked only earns another refusal
+            Some(h) if !backoff.will_wait(h) => return Err(err),
+            Some(h) => h,
+            None => backoff.delay(attempt),
+        };
         #[cfg(feature = "tracing")]
         tracing::warn!(attempt, delay_ms = delay.as_millis() as u64, error = %err, "retrying");
         client.sleep(delay).await;
@@ -416,16 +421,45 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn retry_hints_are_capped_by_the_backoff_max() {
+    fn retry_hints_up_to_the_backoff_max_are_waited_in_full() {
         let t = fake_full(vec![
-            status(429, &[("retry-after", "120")]),
-            status(429, &[("x-ratelimit-reset-tokens", "6m0s")]),
+            status(429, &[("retry-after", "5")]),
+            status(429, &[("x-ratelimit-reset-tokens", "4.5s")]),
             ok(ONE),
         ]);
         let c = client(&t).with_retry(Backoff::new().jitter(false).max(Duration::from_secs(5)));
         block_on(c.embed(["a"]).into_future()).unwrap();
         let slept = t.slept.lock().unwrap();
-        assert_eq!(slept[1..], [Duration::from_secs(5), Duration::from_secs(5)]);
+        assert_eq!(
+            slept[1..],
+            [Duration::from_secs(5), Duration::from_millis(4500)]
+        );
+    }
+
+    #[test]
+    fn a_retry_hint_above_the_backoff_max_ends_the_retries() {
+        for headers in [
+            &[("retry-after", "6")][..],
+            &[("x-ratelimit-reset-requests", "5001ms")],
+        ] {
+            let t = fake_full(vec![status(429, headers), ok(ONE)]);
+            let c = client(&t).with_retry(Backoff::new().jitter(false).max(Duration::from_secs(5)));
+            let e = block_on(c.embed(["a"]).into_future()).unwrap_err();
+            let want = parse_hint(headers[0].1);
+            assert!(
+                matches!(e, Error::Api { status: 429, retry_after, .. } if retry_after == Some(want)),
+                "{e:?}"
+            );
+            assert_eq!(t.sent.lock().unwrap().len(), 1);
+            // only the timeout timer
+            assert_eq!(t.slept.lock().unwrap().len(), 1);
+        }
+    }
+
+    fn parse_hint(v: &str) -> Duration {
+        crate::retry::parse_duration(v)
+            .or_else(|| v.parse().ok().map(Duration::from_secs))
+            .unwrap()
     }
 
     #[test]
