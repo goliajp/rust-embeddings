@@ -9,7 +9,7 @@
 
 > **Upgrading from 0.6?** 0.7 changes the API: `result.embeddings[i]` is now `result[i]`, errors and backoff have new names, and a fallback runs only after a transient failure. The [migration table](CHANGELOG.md#upgrading-from-06) gives the one-line fix for each. Requests are the same as in 0.6.2; local vectors differ from 0.6.2 by at most 3.3e-7 per component.
 
-One async Rust client for text embeddings. Six cloud APIs (OpenAI, Cohere, Gemini, Voyage, Jina, Mistral) and four small BERT models that run in-process on the CPU return the same `EmbedResult`, so switching backends is a one-line change. On an Apple M4 Pro with default threads, the local `all-MiniLM-L6-v2` runs 3.1–4.4x faster than fastembed (ONNX Runtime) on single texts and 8.9–15x faster on batches of 256, with the same vectors to within 3.3e-7.
+One async Rust client for text embeddings. Six cloud APIs (OpenAI, Cohere, Gemini, Voyage, Jina, Mistral) and four small BERT models that run in-process on the CPU return the same `EmbedResult`, so switching backends is a one-line change. On an Apple M4 Pro with default threads, the local `all-MiniLM-L6-v2` runs 3.5–4.3x faster than fastembed (ONNX Runtime) on single texts and 8.8–23x faster on batches of 256, with the same vectors to within 3.3e-7.
 
 ## Features
 
@@ -28,39 +28,39 @@ Everything here was measured on 2026-11-26 on an Apple M4 Pro Mac mini (14 cores
 
 ### Local inference
 
-`all-MiniLM-L6-v2` against 0.6.2 (candle), [fastembed](https://crates.io/crates/fastembed) 7.8.0 (ONNX Runtime) on the same model, truncating at the same 256 tokens, and [model2vec-rs](https://crates.io/crates/model2vec-rs) 0.5.1 with `potion-base-8M`, all in one process. Vectors differ from 0.6.2 by at most 3.3e-7 per component (38 texts, all four models, cosine 1 − 2e-12 or closer); 0.6.2 agreed with fastembed to a cosine of 1.000000 on 32 mixed texts. Single texts are 8, 40 and 180 words (13, 56 and 227 tokens), batches 256 texts of 8, 40 or 180 words and a mix of 4 to 200 words. Single texts: median of 200 calls (30 on one thread); batches: median of 5 runs. The one-minute load average, sampled every 10 s, was at most 4.4 (the benchmark's own threads included). One thread means `EMBEDRS_THREADS=1 VECLIB_MAXIMUM_THREADS=1` for embedrs, `RAYON_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1` for 0.6.2 and one intra-op thread for fastembed.
+`all-MiniLM-L6-v2` against 0.6.2 (candle), [fastembed](https://crates.io/crates/fastembed) 7.8.0 (ONNX Runtime) on the same model, truncating at the same 256 tokens, and [model2vec-rs](https://crates.io/crates/model2vec-rs) 0.5.1 with `potion-base-8M`, all in one process. Vectors differ from 0.6.2 by at most 3.3e-7 per component (38 texts, all four models, cosine 1 − 2e-12 or closer); 0.6.2 agreed with fastembed to a cosine of 1.000000 on 32 mixed texts. Single texts are 8, 40 and 180 words (13, 56 and 227 tokens), batches 256 texts of 8, 40 or 180 words and a mix of 4 to 200 words. Single texts: median of 200 calls (30 on one thread); batches: median of 5 runs. The one-minute load average, sampled every 10 s, was at most 8.3 (the benchmark's own threads and the build before it included). One thread means `EMBEDRS_THREADS=1 VECLIB_MAXIMUM_THREADS=1` for embedrs, `RAYON_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1` for 0.6.2 and one intra-op thread for fastembed.
 
 | Default threads | 0.6.2 | **embedrs** | fastembed | model2vec |
 |---|---|---|---|---|
-| one text, 8 words | 3.13 ms | **1.34 ms** | 4.21 ms | 0.0003 ms |
-| one text, 40 words | 5.86 ms | **2.47 ms** | 8.17 ms | 0.0012 ms |
-| one text, 180 words | 15.7 ms | **5.48 ms** | 24.1 ms | 0.0051 ms |
-| 256 texts, 8 words | 1,882 /s | **6,948 /s** | 660 /s | 2.8 M/s |
-| 256 texts, 40 words | 763 /s | **1,664 /s** | 188 /s | 1.9 M/s |
-| 256 texts, 180 words | 158 /s | **344 /s** | 26 /s | 1.1 M/s |
-| 256 texts, mixed | 209 /s | **633 /s** | 42 /s | 1.2 M/s |
+| one text, 8 words | 3.13 ms | **1.18 ms** | 4.24 ms | 0.0004 ms |
+| one text, 40 words | 5.92 ms | **2.28 ms** | 8.09 ms | 0.0012 ms |
+| one text, 180 words | 15.8 ms | **5.53 ms** | 24.0 ms | 0.0051 ms |
+| 256 texts, 8 words | 1,864 /s | **6,937 /s** | 671 /s | 3.2 M/s |
+| 256 texts, 40 words | 760 /s | **1,648 /s** | 187 /s | 2.1 M/s |
+| 256 texts, 180 words | 158 /s | **345 /s** | 22 /s | 1.0 M/s |
+| 256 texts, mixed | 246 /s | **633 /s** | 27 /s | 1.7 M/s |
 
 | One thread | 0.6.2 | **embedrs** | fastembed | model2vec |
 |---|---|---|---|---|
-| one text, 8 words | 2.19 ms | **1.47 ms** | 4.02 ms | 0.0004 ms |
-| one text, 40 words | 5.55 ms | **2.56 ms** | 7.45 ms | 0.0012 ms |
-| one text, 180 words | 23.5 ms | **9.88 ms** | 26.4 ms | 0.0051 ms |
-| 256 texts, 8 words | 806 /s | **2,486 /s** | 579 /s | 2.0 M/s |
-| 256 texts, 40 words | 205 /s | **520 /s** | 154 /s | 0.63 M/s |
-| 256 texts, 180 words | 40 /s | **103 /s** | 26 /s | 0.15 M/s |
-| 256 texts, mixed | 62 /s | **198 /s** | 26 /s | 0.25 M/s |
+| one text, 8 words | 1.77 ms | **1.24 ms** | 3.59 ms | 0.0003 ms |
+| one text, 40 words | 5.57 ms | **2.68 ms** | 7.38 ms | 0.0012 ms |
+| one text, 180 words | 23.4 ms | **10.1 ms** | 27.1 ms | 0.0052 ms |
+| 256 texts, 8 words | 803 /s | **2,508 /s** | 578 /s | 2.2 M/s |
+| 256 texts, 40 words | 204 /s | **494 /s** | 157 /s | 0.62 M/s |
+| 256 texts, 180 words | 40 /s | **104 /s** | 22 /s | 0.15 M/s |
+| 256 texts, mixed | 62 /s | **196 /s** | 31 /s | 0.26 M/s |
 
-On Linux (Intel i7-10700K, 8 cores, x86_64 with AVX2, same build settings and texts, under the same kind of benchmark lock; load average at most 12.7) the matrix products run on embedrs' own AVX2/FMA kernels. With default threads embedrs is ahead of fastembed on every row; on one thread ONNX Runtime is faster on single texts and on the batch of 180-word texts.
+On Linux (Intel i7-10700K, 8 cores, x86_64 with AVX2, same build settings and texts, under the same kind of benchmark lock; load average at most 12.2) the matrix products run on embedrs' own AVX2/FMA kernels. With default threads embedrs is ahead of fastembed on every row; on one thread ONNX Runtime is faster on single texts, and the batch of 180-word texts is a tie.
 
 | Intel i7-10700K, Linux | 0.6.2 | **embedrs** | fastembed | 0.6.2, one thread | **embedrs, one thread** | fastembed, one thread |
 |---|---|---|---|---|---|---|
-| one text, 8 words | 11.9 ms | **1.92 ms** | 1.96 ms | 9.32 ms | **4.58 ms** | 3.89 ms |
-| one text, 40 words | 22.5 ms | **3.03 ms** | 3.67 ms | 21.2 ms | **11.9 ms** | 11.6 ms |
-| one text, 180 words | 46.3 ms | **8.74 ms** | 10.3 ms | 85.2 ms | **51.6 ms** | 46.2 ms |
-| 256 texts, 8 words | 640 /s | **2,208 /s** | 1,196 /s | 224 /s | **341 /s** | 258 /s |
-| 256 texts, 40 words | 171 /s | **529 /s** | 289 /s | 53 /s | **80 /s** | 70 /s |
-| 256 texts, 180 words | 33 /s | **110 /s** | 62 /s | 10 /s | **16 /s** | 17 /s |
-| 256 texts, mixed | 49 /s | **201 /s** | 61 /s | 15 /s | **30 /s** | 17 /s |
+| one text, 8 words | 12.0 ms | **1.48 ms** | 1.95 ms | 10.1 ms | **4.36 ms** | 3.82 ms |
+| one text, 40 words | 22.1 ms | **2.98 ms** | 3.62 ms | 21.3 ms | **12.4 ms** | 11.4 ms |
+| one text, 180 words | 46.3 ms | **8.78 ms** | 10.3 ms | 85.4 ms | **53.6 ms** | 44.9 ms |
+| 256 texts, 8 words | 651 /s | **2,198 /s** | 1,136 /s | 222 /s | **347 /s** | 261 /s |
+| 256 texts, 40 words | 171 /s | **533 /s** | 295 /s | 53 /s | **81 /s** | 71 /s |
+| 256 texts, 180 words | 33 /s | **110 /s** | 62 /s | 10 /s | **17 /s** | 17 /s |
+| 256 texts, mixed | 49 /s | **202 /s** | 62 /s | 15 /s | **31 /s** | 17 /s |
 
 Peak memory (largest resident set) of a process that loads one model and embeds the 256 mixed texts: 178 MB for `all-MiniLM-L6-v2` (0.6.2: 1,715 MB), 219 to 234 MB for the 12-layer models (0.6.2: 680 to 1,883 MB). On the Linux machine: 185 MB for `all-MiniLM-L6-v2` (0.6.2: 1,009 MB), 264 MB for `all-MiniLM-L12-v2` (0.6.2: 572 MB). The F32 weight files are mapped and read in place, and texts run without padding in chunks of about 4,096 tokens.
 
