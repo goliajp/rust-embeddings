@@ -100,6 +100,10 @@ fn jina_task(model: &str, input_type: Option<InputType>) -> Result<Option<&'stat
         return Ok(None);
     };
     let refuse = || Err(Error::unsupported(model, format!("input_type({it:?})")));
+    if model.starts_with("jina-embeddings-v2") || model.starts_with("jina-clip-v1") {
+        // their request schemas have no `task`
+        return Ok(None);
+    }
     if model.starts_with("jina-code-embeddings") {
         // its tasks are nl2code, qa, code2code and so on, none of the input types
         return refuse();
@@ -357,6 +361,8 @@ mod tests {
         assert_eq!(t("jina-clip-v2", Clustering), None);
         assert_eq!(t("jina-code-embeddings-1.5b", SearchQuery), None);
         assert_eq!(jina_task("jina-embeddings-v4", None).ok(), Some(None));
+        assert_eq!(t("jina-embeddings-v2-base-en", SearchQuery), Some(None));
+        assert_eq!(t("jina-clip-v1", Clustering), Some(None));
     }
 
     #[test]
