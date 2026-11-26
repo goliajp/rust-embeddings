@@ -7,50 +7,52 @@
 
 **English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-> **Upgrading from 0.6?** 0.7 changes the API: `result.embeddings[i]` is now `result[i]`, errors and backoff have new names, and a fallback runs only after a transient failure. The [migration table](CHANGELOG.md#upgrading-from-06) gives the one-line fix for each. Requests and local vectors are the same as in 0.6.2.
+> **Upgrading from 0.6?** 0.7 changes the API: `result.embeddings[i]` is now `result[i]`, errors and backoff have new names, and a fallback runs only after a transient failure. The [migration table](CHANGELOG.md#upgrading-from-06) gives the one-line fix for each. Requests are the same as in 0.6.2; local vectors differ from 0.6.2 by at most 3.3e-7 per component.
 
-One async Rust client for text embeddings. Six cloud APIs (OpenAI, Cohere, Gemini, Voyage, Jina, Mistral) and four small BERT models that run in-process on the CPU return the same `EmbedResult`, so switching backends is a one-line change. On an Apple M4 Pro with default threads, the local `all-MiniLM-L6-v2` runs 1.5–2.8x faster than fastembed (ONNX Runtime) on single texts and 2.9–7.5x faster on batches of 256, with the same vectors.
+One async Rust client for text embeddings. Six cloud APIs (OpenAI, Cohere, Gemini, Voyage, Jina, Mistral) and four small BERT models that run in-process on the CPU return the same `EmbedResult`, so switching backends is a one-line change. On an Apple M4 Pro with default threads, the local `all-MiniLM-L6-v2` runs 3.1–4.4x faster than fastembed (ONNX Runtime) on single texts and 8.9–15x faster on batches of 256, with the same vectors to within 3.3e-7.
 
 ## Features
 
 - **Six cloud providers** behind one `Client`, each with a `*_compatible` constructor for proxies and API-compatible servers.
-- **Local inference** (feature `local`): `all-MiniLM-L6-v2`, `all-MiniLM-L12-v2`, `bge-small-en-v1.5`, `gte-small` on [candle](https://github.com/huggingface/candle), pure Rust; on macOS the matrix products go to Apple's Accelerate framework. Texts are sorted by length and padded per group, and truncated at each model's own limit.
+- **Local inference** (feature `local`): `all-MiniLM-L6-v2`, `all-MiniLM-L12-v2`, `bge-small-en-v1.5`, `gte-small` with the forward pass in the crate, no dependencies. On macOS the matrix products go to Apple's Accelerate framework; on other systems they run on the crate's own AVX2/FMA (x86_64) or NEON (aarch64) kernels. Texts run without padding and are truncated at each model's own limit.
 - **Batching**: `embed_batch` splits any number of texts into requests the provider accepts, by count and by tokens, and runs them concurrently. All vectors of a result sit in one buffer.
 - **Retries and fallback**: exponential backoff on 408, 429, 500, 502, 503, 504, 529 and connection errors, honouring `Retry-After` (seconds or a date); a chain of fallback providers for when the retries run out.
 - **Compact transfer**: OpenAI, Voyage and Cohere return base64 vectors, which embedrs decodes itself; a 256-vector response is 2.3x smaller than its decimal form and parses 7.6x faster.
 - **Cost tracking** (feature `cost-tracking`): estimated USD per request from the [tiktoken](https://crates.io/crates/tiktoken) price table.
 
-- **Few dependencies**: the core has none, with its own JSON, base64, WordPiece and SHA-256 code. The default build adds reqwest (rustls with ring) and tokio's timer: 84 crates on macOS, down from 101 in 0.6.2. With `default-features = false` embedrs is the only crate, and you bring the HTTP client.
+- **Few dependencies**: the core has none, with its own JSON, base64, WordPiece and SHA-256 code. The default build adds reqwest (rustls with ring) and tokio's timer: 84 crates on macOS, down from 101 in 0.6.2. `local` adds none. With `default-features = false` embedrs is the only crate, and you bring the HTTP client.
 
 ## Performance
 
-Everything here was measured on 2026-11-26 on an Apple M4 Pro Mac mini (14 cores, macOS 27.2.1) with rustc 1.100, release build with LTO, while nothing else was running under the machine's benchmark lock. The one-minute load average was sampled every 15 s: at most 5.5 during the multi-threaded local runs (the benchmark's own threads included), 2.2 while the cloud numbers were taken. Linux was not measured.
+Everything here was measured on 2026-11-26 on an Apple M4 Pro Mac mini (14 cores, macOS 27.2.1) with rustc 1.100, release build with LTO, while nothing else was running under the machine's benchmark lock. The one-minute load average was sampled every 15 s while the cloud numbers were taken: at most 2.2. Load during the local runs is given with them.
 
 ### Local inference
 
-`all-MiniLM-L6-v2` against [fastembed](https://crates.io/crates/fastembed) 7.8.0 (ONNX Runtime) on the same model, truncating at the same 256 tokens, and [model2vec-rs](https://crates.io/crates/model2vec-rs) 0.5.1 with `potion-base-8M`. Vectors are bit-for-bit those of 0.6.2 (38 texts, all four models), which agreed with fastembed to a cosine of 1.000000 on 32 mixed texts. Texts are 8, 40 and 180 words (13, 54 and 232 tokens on average) and a mix of 4 to 200 words. Single texts: median of 200 calls (30 on one thread); batches: 256 texts, median of 5 runs.
+`all-MiniLM-L6-v2` against 0.6.2 (candle), [fastembed](https://crates.io/crates/fastembed) 7.8.0 (ONNX Runtime) on the same model, truncating at the same 256 tokens, and [model2vec-rs](https://crates.io/crates/model2vec-rs) 0.5.1 with `potion-base-8M`, all in one process. Vectors differ from 0.6.2 by at most 3.3e-7 per component (38 texts, all four models, cosine 1 − 2e-12 or closer); 0.6.2 agreed with fastembed to a cosine of 1.000000 on 32 mixed texts. Single texts are 8, 40 and 180 words (13, 56 and 227 tokens), batches 256 texts of 8, 40 or 180 words and a mix of 4 to 200 words. Single texts: median of 200 calls (30 on one thread); batches: median of 5 runs. The one-minute load average, sampled every 10 s, was at most 4.4 (the benchmark's own threads included). One thread means `EMBEDRS_THREADS=1 VECLIB_MAXIMUM_THREADS=1` for embedrs, `RAYON_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1` for 0.6.2 and one intra-op thread for fastembed.
 
 | Default threads | 0.6.2 | **embedrs** | fastembed | model2vec |
 |---|---|---|---|---|
-| one text, 8 words | 3.3 ms | **1.55 ms** | 4.3 ms | 0.0003 ms |
-| one text, 40 words | 5.9 ms | **3.07 ms** | 8.1 ms | 0.0012 ms |
-| one text, 180 words | 15.8 ms | **15.4 ms** | 24.0 ms | 0.0050 ms |
-| 256 texts, 8 words | 1,863 /s | **1,930 /s** | 673 /s | 2.7 M/s |
-| 256 texts, 40 words | 750 /s | **800 /s** | 188 /s | 2.3 M/s |
-| 256 texts, 180 words | 158 /s | **162 /s** | 36 /s | 1.1 M/s |
-| 256 texts, mixed | 247 /s | **247 /s** | 33 /s | 1.4 M/s |
+| one text, 8 words | 3.13 ms | **1.34 ms** | 4.21 ms | 0.0003 ms |
+| one text, 40 words | 5.86 ms | **2.47 ms** | 8.17 ms | 0.0012 ms |
+| one text, 180 words | 15.7 ms | **5.48 ms** | 24.1 ms | 0.0051 ms |
+| 256 texts, 8 words | 1,882 /s | **6,948 /s** | 660 /s | 2.8 M/s |
+| 256 texts, 40 words | 763 /s | **1,664 /s** | 188 /s | 1.9 M/s |
+| 256 texts, 180 words | 158 /s | **344 /s** | 26 /s | 1.1 M/s |
+| 256 texts, mixed | 209 /s | **633 /s** | 42 /s | 1.2 M/s |
 
 | One thread | 0.6.2 | **embedrs** | fastembed | model2vec |
 |---|---|---|---|---|
-| one text, 8 words | 1.78 ms | **1.64 ms** | 3.50 ms | 0.0004 ms |
-| one text, 40 words | 5.64 ms | **5.37 ms** | 7.31 ms | 0.0012 ms |
-| one text, 180 words | 23.5 ms | **23.2 ms** | 26.1 ms | 0.0051 ms |
-| 256 texts, 8 words | 803 /s | **817 /s** | 575 /s | 2.0 M/s |
-| 256 texts, 40 words | 205 /s | **208 /s** | 157 /s | 0.63 M/s |
-| 256 texts, 180 words | 40 /s | **41 /s** | 26 /s | 0.15 M/s |
-| 256 texts, mixed | 62 /s | **63 /s** | 19 /s | 0.24 M/s |
+| one text, 8 words | 2.19 ms | **1.47 ms** | 4.02 ms | 0.0004 ms |
+| one text, 40 words | 5.55 ms | **2.56 ms** | 7.45 ms | 0.0012 ms |
+| one text, 180 words | 23.5 ms | **9.88 ms** | 26.4 ms | 0.0051 ms |
+| 256 texts, 8 words | 806 /s | **2,486 /s** | 579 /s | 2.0 M/s |
+| 256 texts, 40 words | 205 /s | **520 /s** | 154 /s | 0.63 M/s |
+| 256 texts, 180 words | 40 /s | **103 /s** | 26 /s | 0.15 M/s |
+| 256 texts, mixed | 62 /s | **198 /s** | 26 /s | 0.25 M/s |
 
-Short texts are faster than in 0.6.2 because inputs of up to 224 tokens no longer go through the thread pool for layers too small to gain from it (macOS only). model2vec is faster on every row because it is a different kind of model: a static embedding looks each token up in a table and averages, with no transformer layers. It is listed for scale; on quality it is not a replacement for a transformer model. Against fastembed, the gains come from padding each group of texts only to its longest member, Accelerate for the matrix products, and a forward pass that fuses the query, key and value projections.
+Peak memory (largest resident set) of a process that loads one model and embeds the 256 mixed texts: 178 MB for `all-MiniLM-L6-v2` (0.6.2: 1,715 MB), 219 to 234 MB for the 12-layer models (0.6.2: 680 to 1,883 MB). The F32 weight files are mapped and read in place, and texts run without padding in chunks of about 4,096 tokens.
+
+The matrix products run in Accelerate in both 0.6.2 and embedrs; the rest of the forward pass is where the time went. embedrs computes GELU with a vectorised erf (0.6.2 called `erff` once per value), fuses the residual add into layer normalisation, runs attention per text and head without padding or masks, and spreads the rest over the performance cores only when a call is large enough to gain from it. model2vec is faster on every row because it is a different kind of model: a static embedding looks each token up in a table and averages, with no transformer layers. It is listed for scale; on quality it is not a replacement for a transformer model.
 
 ### Cloud calls
 
@@ -80,12 +82,12 @@ embedrs = { version = "0.7", features = ["local"] }
 | Feature | Default | What it adds |
 |---|---|---|
 | `reqwest` | yes | The HTTP transport and the constructors that use it (`embedrs::cloud`, `Client::openai`, …) |
-| `local` | no | Local inference with candle (the tokenizer is compiled in; weights are downloaded on first use) |
+| `local` | no | Local inference on the CPU, no dependencies (the tokenizer is compiled in; weights are downloaded on first use) |
 | `cost-tracking` | no | `Usage::cost`, from tiktoken's price table (no tokenizer vocabularies are compiled in) |
 | `token-count` | no | Exact OpenAI token counts for planning batches and refusing long inputs (compiles in `cl100k_base`) |
 | `tracing` | no | Spans and events through the `tracing` crate |
 
-Crates in the dependency tree on macOS, embedrs included (0.6.2 in parentheses): default 84 (101), `local` 201 (255), `default-features = false` 1, `local` without `reqwest` 137. The `local` count is nearly all candle; `candle-core` pulls in the `tokenizers` crate, which embedrs itself does not use.
+Crates in the dependency tree on macOS, embedrs included (0.6.2 in parentheses): default 84 (101), default with `local` 84 (255), `default-features = false` 1, `local` without `reqwest` 1. On x86_64 Linux the default build has 82.
 
 ## Quick start
 
@@ -179,7 +181,7 @@ fn azure() -> Client {
 
 All four produce 384-dimensional, L2-normalised vectors. `bge-small-en-v1.5` prepends its query instruction when the input type is `InputType::SearchQuery`. A local client accepts `.model()` with another local model id, and `.dimensions(384)`; anything else is an error. Longer texts are truncated, and `usage.total_tokens` counts the tokens the model read.
 
-Each loaded model runs on its own thread, so local inference needs no async runtime: `LocalModel::from_files` loads weights you already have, and `embed_blocking` embeds and waits.
+Each loaded model runs on its own thread, so local inference needs no async runtime: `LocalModel::from_files` loads weights you already have (safetensors in F32, F16 or BF16), and `embed_blocking` embeds and waits. A call with more than a few dozen tokens also uses worker threads while it runs: the performance cores on macOS, every core the process may use elsewhere. Set `EMBEDRS_THREADS` to change the number; `EMBEDRS_THREADS=1` keeps a call on the model's own thread (on macOS, Accelerate still follows `VECLIB_MAXIMUM_THREADS`).
 
 ## Batch embedding
 

@@ -109,8 +109,8 @@ any component (38 texts, all four models; cosine 1 − 2e-12 or closer).
 - The core has no dependencies. The default build adds reqwest (rustls with
   ring) and tokio's timer; `serde`, `serde_json`, `thiserror`, `rand` and
   `futures` are gone. Distinct crates on macOS, this one included: 84 by
-  default (101 in 0.6.2), 1 with `default-features = false`, 201 with `local`
-  (255 in 0.6.2).
+  default (101 in 0.6.2), 1 with `default-features = false`, 84 with `local`
+  (255 in 0.6.2) and 1 with `local` alone.
 - `local` has no dependencies: the forward pass, the safetensors reader, the
   WordPiece tokenizer and the download code are in the crate. candle, `hf-hub`,
   `tokenizers` and rayon are gone, and nothing links onig (C) or OpenSSL. On
@@ -131,9 +131,12 @@ any component (38 texts, all four models; cosine 1 − 2e-12 or closer).
 
 Measured on an Apple M4 Pro (conditions and peers in the README), 0.6.2 first:
 
-- One local text with default threads, on macOS: 8 words 3.3 → 1.55 ms, 40
-  words 5.9 → 3.07 ms; 180 words 15.8 → 15.4 ms. Batches and one-thread runs
-  are equal to 0.6.2 or up to 8% faster.
+- Local `all-MiniLM-L6-v2`, default threads: one text of 8 words 3.13 → 1.34
+  ms, 40 words 5.86 → 2.47 ms, 180 words 15.7 → 5.48 ms; batches of 256 texts
+  2.2 to 3.7 times as many texts per second (8 words 1,882 → 6,948 /s, mixed
+  lengths 209 → 633 /s). With one thread: 1.5 to 3.2 times as fast.
+- Peak memory of a process that loads one local model and embeds 256 texts:
+  178 to 234 MB, against 680 to 1,883 MB in 0.6.2.
 - `embed()` over loopback, 256 vectors of 1536 dimensions: decimal 6.64 →
   3.87 ms, base64 1.43 → 0.80 ms.
 - Request bodies: 256 texts in 0.015 ms (serde_json 0.024 ms).
