@@ -1,15 +1,26 @@
 //! Local inference (feature `local`): four small BERT models on the CPU,
-//! with candle for the forward pass and an in-crate WordPiece tokenizer.
+//! with an in-crate forward pass and WordPiece tokenizer. On macOS the
+//! matrix products go to the Accelerate framework that ships with the OS.
 //!
 //! Each loaded model runs on its own worker thread, one batch at a time,
 //! so inference never blocks the caller's async threads and needs no
 //! runtime. Weights are downloaded once into the Hugging Face cache,
 //! pinned to a commit and checked against their SHA-256.
 
-mod bert;
+mod attention;
 mod engine;
+mod forward;
+mod gemm;
 mod hub;
 mod model;
+mod ops;
+#[cfg(test)]
+mod parity;
+mod pool;
+#[cfg(test)]
+mod reference;
+mod safetensors;
+mod weights;
 mod wordpiece;
 
 use std::collections::HashMap;

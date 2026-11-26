@@ -80,7 +80,8 @@ Behaviour that changes without a compile error:
 
 The requests themselves do not change: for every provider, model kind, input
 type and dimension setting that 0.6.2 was recorded with (510 cases), 0.7 sends
-the same bytes. Vectors of local models do not change either.
+the same bytes. Vectors of local models differ from 0.6.2 by at most 3.3e-7 in
+any component (38 texts, all four models; cosine 1 − 2e-12 or closer).
 
 ### Added
 
@@ -108,22 +109,36 @@ the same bytes. Vectors of local models do not change either.
 - The core has no dependencies. The default build adds reqwest (rustls with
   ring) and tokio's timer; `serde`, `serde_json`, `thiserror`, `rand` and
   `futures` are gone. Distinct crates on macOS, this one included: 84 by
-  default (101 in 0.6.2), 1 with `default-features = false`, 201 with `local`
-  (255 in 0.6.2).
-- `local` no longer uses `hf-hub`, `ruzstd` or `candle-transformers`, and links
-  neither onig (C) nor OpenSSL. `candle-core` itself still depends on
-  `tokenizers`, which embedrs does not call.
+  default (101 in 0.6.2), 1 with `default-features = false`, 84 with `local`
+  (255 in 0.6.2) and 1 with `local` alone.
+- `local` has no dependencies: the forward pass, the safetensors reader, the
+  WordPiece tokenizer and the download code are in the crate. candle, `hf-hub`,
+  `tokenizers` and rayon are gone, and nothing links onig (C) or OpenSSL. On
+  macOS the matrix products go to the Accelerate framework that ships with the
+  OS; elsewhere they run on in-crate AVX2/FMA (x86_64) or NEON (aarch64)
+  kernels, with a portable fallback.
 - Local inference runs on one worker thread per model instead of tokio's
-  blocking pool, so it needs no runtime.
+  blocking pool, so it needs no runtime. A call with enough tokens adds
+  threads for the length of the call: the performance cores on macOS, all
+  available cores elsewhere, or `EMBEDRS_THREADS`.
+- Local texts are no longer padded: each call's texts run unpadded in chunks
+  of about 4096 tokens.
+- F32 weight files are mapped and read in place; F16 and BF16 files are
+  widened to f32 when loaded.
 - All vectors of a result share one buffer.
 
 ### Performance
 
 Measured on an Apple M4 Pro (conditions and peers in the README), 0.6.2 first:
 
-- One local text with default threads, on macOS: 8 words 3.3 → 1.55 ms, 40
-  words 5.9 → 3.07 ms; 180 words 15.8 → 15.4 ms. Batches and one-thread runs
-  are equal to 0.6.2 or up to 8% faster.
+- Local `all-MiniLM-L6-v2` on an M4 Pro, default threads: one text of 8 words
+  3.13 → 1.18 ms, 40 words 5.92 → 2.28 ms, 180 words 15.8 → 5.53 ms; batches of
+  256 texts 2.2 to 3.7 times as many texts per second (8 words 1,864 → 6,937 /s,
+  mixed lengths 246 → 633 /s). With one thread: 1.4 to 3.2 times as fast. On
+  an Intel i7-10700K (Linux), 3.1 to 8.1 times as fast with default threads and
+  1.5 to 2.3 times with one thread.
+- Peak memory of a process that loads one local model and embeds 256 texts:
+  178 to 234 MB, against 680 to 1,883 MB in 0.6.2.
 - `embed()` over loopback, 256 vectors of 1536 dimensions: decimal 6.64 →
   3.87 ms, base64 1.43 → 0.80 ms.
 - Request bodies: 256 texts in 0.015 ms (serde_json 0.024 ms).

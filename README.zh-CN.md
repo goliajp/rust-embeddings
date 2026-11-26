@@ -7,50 +7,64 @@
 
 [English](README.md) | **简体中文** | [日本語](README.ja.md)
 
-> **从 0.6 升级**：0.7 的 API 有改动：`result.embeddings[i]` 改成 `result[i]`，错误类型和退避配置换了名字，备用服务只在临时故障时启用。[迁移表](CHANGELOG.md#upgrading-from-06)列出了每一处的改法，都只要改一行。发出的请求和本地模型的向量与 0.6.2 相同。
+> **从 0.6 升级**：0.7 的 API 有改动：`result.embeddings[i]` 改成 `result[i]`，错误类型和退避配置换了名字，备用服务只在临时故障时启用。[迁移表](CHANGELOG.md#upgrading-from-06)列出了每一处的改法，都只要改一行。发出的请求与 0.6.2 相同；本地模型的向量与 0.6.2 的差别每个分量不超过 3.3e-7。
 
-embedrs 是一个异步的 Rust 文本向量化（embedding）客户端。六家云端 API（OpenAI、Cohere、Gemini、Voyage、Jina、Mistral）和四个在本进程 CPU 上运行的小型 BERT 模型返回同一个 `EmbedResult`，换后端只要改一行。在 Apple M4 Pro 上用默认线程数，本地的 `all-MiniLM-L6-v2` 处理单条文本比 fastembed（ONNX Runtime）快 1.5～2.8 倍，处理 256 条一批的文本快 2.9～7.5 倍，两者输出的向量相同。
+embedrs 是一个异步的 Rust 文本向量化（embedding）客户端。六家云端 API（OpenAI、Cohere、Gemini、Voyage、Jina、Mistral）和四个在本进程 CPU 上运行的小型 BERT 模型返回同一个 `EmbedResult`，换后端只要改一行。在 Apple M4 Pro 上用默认线程数，本地的 `all-MiniLM-L6-v2` 处理单条文本比 fastembed（ONNX Runtime）快 3.5～4.3 倍，处理 256 条一批的文本快 8.8～23 倍，两者输出的向量相差不到 3.3e-7。
 
 ## 功能
 
 - **六家云端服务**共用一个 `Client`，每家都有 `*_compatible` 构造函数，可以接代理或兼容同一 API 的服务
-- **本地推理**（feature `local`）：`all-MiniLM-L6-v2`、`all-MiniLM-L12-v2`、`bge-small-en-v1.5`、`gte-small`，基于纯 Rust 的 [candle](https://github.com/huggingface/candle)；在 macOS 上矩阵乘法交给系统自带的 Accelerate 框架。文本先按长度排序、分组补齐，再按各模型自己的上限截断
+- **本地推理**（feature `local`）：`all-MiniLM-L6-v2`、`all-MiniLM-L12-v2`、`bge-small-en-v1.5`、`gte-small`，前向计算由 embedrs 自己实现，不依赖其他 crate。在 macOS 上矩阵乘法交给系统自带的 Accelerate 框架，在其他系统上用 embedrs 自带的 AVX2/FMA（x86_64）或 NEON（aarch64）内核。文本不做补齐，按各模型自己的上限截断
 - **批量**：`embed_batch` 把任意数量的文本按条数和 token 数拆成服务商能接受的请求，并发发送。一次调用的所有向量放在同一块内存里
 - **重试和备用**：遇到 408、429、500、502、503、504、529 和连接错误时按指数退避重试，遵守 `Retry-After`（秒数或日期）；重试用完后依次改用备用服务
 - **紧凑传输**：OpenAI、Voyage 和 Cohere 以 base64 返回向量，由 embedrs 自己解码。256 个向量的响应比十进制文本小 2.3 倍，解析快 7.6 倍
 - **费用估算**（feature `cost-tracking`）：按 [tiktoken](https://crates.io/crates/tiktoken) 的价格表估算每次请求的美元费用
 
-- **依赖少**：核心部分不依赖任何第三方库，JSON、base64、WordPiece 和 SHA-256 都是自己实现的。默认构建只加上 reqwest（rustls + ring）和 tokio 的定时器，在 macOS 上共 84 个 crate，0.6.2 是 101 个。设置 `default-features = false` 时只有 embedrs 一个 crate，HTTP 客户端由你提供
+- **依赖少**：核心部分不依赖任何第三方库，JSON、base64、WordPiece 和 SHA-256 都是自己实现的。默认构建只加上 reqwest（rustls + ring）和 tokio 的定时器，在 macOS 上共 84 个 crate，0.6.2 是 101 个。开启 `local` 不增加 crate。设置 `default-features = false` 时只有 embedrs 一个 crate，HTTP 客户端由你提供
 
 ## 性能
 
-以下数字都是 2026-11-26 在一台 Apple M4 Pro Mac mini（14 核，macOS 27.2.1）上测的，rustc 1.100，release 构建并开启 LTO，测量期间占着这台机器的基准锁，没有别的任务同时跑。每 15 秒采一次 1 分钟平均负载：本地多线程测试期间最高 5.5（包含测试程序自己的线程），云端部分最高 2.2。没有在 Linux 上测量。
+以下数字都是 2026-11-26 在一台 Apple M4 Pro Mac mini（14 核，macOS 27.2.1）上测的，rustc 1.100，release 构建并开启 LTO，测量期间占着这台机器的基准锁，没有别的任务同时跑。测云端调用时每 15 秒采一次 1 分钟平均负载，最高 2.2；本地推理的负载写在对应的小节里。
 
 ### 本地推理
 
-模型 `all-MiniLM-L6-v2`。对比对象是 [fastembed](https://crates.io/crates/fastembed) 7.8.0（ONNX Runtime，同一个模型，同样在 256 个 token 处截断）和 [model2vec-rs](https://crates.io/crates/model2vec-rs) 0.5.1（模型 `potion-base-8M`）。输出的向量与 0.6.2 逐位相同（38 条文本，四个模型都比过），而 0.6.2 与 fastembed 在 32 条长度不一的文本上，余弦相似度最低为 1.000000。测试文本长 8、40、180 个英文单词（平均 13、54、232 个 token），另有一组 4 到 200 个词混合的文本。单条文本取 200 次调用的中位数（单线程时取 30 次），批量取 256 条文本 5 轮的中位数。
+模型 `all-MiniLM-L6-v2`，在同一个进程里对比 0.6.2（基于 candle）、[fastembed](https://crates.io/crates/fastembed) 7.8.0（ONNX Runtime，同一个模型，同样在 256 个 token 处截断）和 [model2vec-rs](https://crates.io/crates/model2vec-rs) 0.5.1（模型 `potion-base-8M`）。输出的向量与 0.6.2 的差别每个分量不超过 3.3e-7（38 条文本，四个模型都比过，余弦相似度与 1 相差不到 2e-12）；0.6.2 与 fastembed 在 32 条长度不一的文本上，余弦相似度最低为 1.000000。单条文本长 8、40、180 个英文单词（13、56、227 个 token），批量是 256 条 8、40 或 180 个词的文本，另有一组 4 到 200 个词混合的文本。单条文本取 200 次调用的中位数（单线程时取 30 次），批量取 5 轮的中位数。每 10 秒采一次 1 分钟平均负载，最高 8.3（包含测试程序自己的线程和开头的编译）。「单线程」指 embedrs 设置 `EMBEDRS_THREADS=1 VECLIB_MAXIMUM_THREADS=1`，0.6.2 设置 `RAYON_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1`，fastembed 只用一个算子内线程。
 
 | 默认线程数 | 0.6.2 | **embedrs** | fastembed | model2vec |
 |---|---|---|---|---|
-| 一条文本，8 个词 | 3.3 ms | **1.55 ms** | 4.3 ms | 0.0003 ms |
-| 一条文本，40 个词 | 5.9 ms | **3.07 ms** | 8.1 ms | 0.0012 ms |
-| 一条文本，180 个词 | 15.8 ms | **15.4 ms** | 24.0 ms | 0.0050 ms |
-| 256 条，8 个词 | 1,863 条/s | **1,930 条/s** | 673 条/s | 270 万条/s |
-| 256 条，40 个词 | 750 条/s | **800 条/s** | 188 条/s | 230 万条/s |
-| 256 条，180 个词 | 158 条/s | **162 条/s** | 36 条/s | 110 万条/s |
-| 256 条，长度混合 | 247 条/s | **247 条/s** | 33 条/s | 140 万条/s |
+| 单条，8 词 | 3.13 ms | **1.18 ms** | 4.24 ms | 0.0004 ms |
+| 单条，40 词 | 5.92 ms | **2.28 ms** | 8.09 ms | 0.0012 ms |
+| 单条，180 词 | 15.8 ms | **5.53 ms** | 24.0 ms | 0.0051 ms |
+| 256 条，8 词 | 1,864 条/秒 | **6,937 条/秒** | 671 条/秒 | 320 万条/秒 |
+| 256 条，40 词 | 760 条/秒 | **1,648 条/秒** | 187 条/秒 | 210 万条/秒 |
+| 256 条，180 词 | 158 条/秒 | **345 条/秒** | 22 条/秒 | 100 万条/秒 |
+| 256 条，长短混合 | 246 条/秒 | **633 条/秒** | 27 条/秒 | 170 万条/秒 |
 
 | 单线程 | 0.6.2 | **embedrs** | fastembed | model2vec |
 |---|---|---|---|---|
-| 一条文本，8 个词 | 1.78 ms | **1.64 ms** | 3.50 ms | 0.0004 ms |
-| 一条文本，40 个词 | 5.64 ms | **5.37 ms** | 7.31 ms | 0.0012 ms |
-| 一条文本，180 个词 | 23.5 ms | **23.2 ms** | 26.1 ms | 0.0051 ms |
-| 256 条，8 个词 | 803 条/s | **817 条/s** | 575 条/s | 200 万条/s |
-| 256 条，40 个词 | 205 条/s | **208 条/s** | 157 条/s | 63 万条/s |
-| 256 条，180 个词 | 40 条/s | **41 条/s** | 26 条/s | 15 万条/s |
-| 256 条，长度混合 | 62 条/s | **63 条/s** | 19 条/s | 24 万条/s |
+| 单条，8 词 | 1.77 ms | **1.24 ms** | 3.59 ms | 0.0003 ms |
+| 单条，40 词 | 5.57 ms | **2.68 ms** | 7.38 ms | 0.0012 ms |
+| 单条，180 词 | 23.4 ms | **10.1 ms** | 27.1 ms | 0.0052 ms |
+| 256 条，8 词 | 803 条/秒 | **2,508 条/秒** | 578 条/秒 | 220 万条/秒 |
+| 256 条，40 词 | 204 条/秒 | **494 条/秒** | 157 条/秒 | 62 万条/秒 |
+| 256 条，180 词 | 40 条/秒 | **104 条/秒** | 22 条/秒 | 15 万条/秒 |
+| 256 条，长短混合 | 62 条/秒 | **196 条/秒** | 31 条/秒 | 26 万条/秒 |
 
-短文本比 0.6.2 快，是因为不超过 224 个 token 的输入里，太小、分给多个线程反而更慢的层不再经过线程池（只在 macOS 上这样做）。model2vec 在每一行都更快，因为它是另一类模型：静态向量模型只是在表里查出每个 token 的向量再求平均，没有 Transformer 层。这里列出它只是作为参照，在质量上它不能替代 Transformer 模型。相比 fastembed 的提速来自三处：每组文本只补齐到组内最长的一条；用 Accelerate 计算矩阵乘法；前向计算把 query、key、value 三个投影合并成一次矩阵乘法。
+在 Linux 上（Intel i7-10700K，8 核，x86_64，支持 AVX2，构建设置和文本相同，同样在基准锁下测量，1 分钟平均负载最高 12.2），矩阵乘法用 embedrs 自带的 AVX2/FMA 内核计算。默认线程数时 embedrs 每一行都比 fastembed 快；单线程时，单条文本是 ONNX Runtime 更快，180 词的批量两者持平。
+
+| Intel i7-10700K，Linux | 0.6.2 | **embedrs** | fastembed | 0.6.2 单线程 | **embedrs 单线程** | fastembed 单线程 |
+|---|---|---|---|---|---|---|
+| 单条，8 词 | 12.0 ms | **1.48 ms** | 1.95 ms | 10.1 ms | **4.36 ms** | 3.82 ms |
+| 单条，40 词 | 22.1 ms | **2.98 ms** | 3.62 ms | 21.3 ms | **12.4 ms** | 11.4 ms |
+| 单条，180 词 | 46.3 ms | **8.78 ms** | 10.3 ms | 85.4 ms | **53.6 ms** | 44.9 ms |
+| 256 条，8 词 | 651 条/秒 | **2,198 条/秒** | 1,136 条/秒 | 222 条/秒 | **347 条/秒** | 261 条/秒 |
+| 256 条，40 词 | 171 条/秒 | **533 条/秒** | 295 条/秒 | 53 条/秒 | **81 条/秒** | 71 条/秒 |
+| 256 条，180 词 | 33 条/秒 | **110 条/秒** | 62 条/秒 | 10 条/秒 | **17 条/秒** | 17 条/秒 |
+| 256 条，长短混合 | 49 条/秒 | **202 条/秒** | 62 条/秒 | 15 条/秒 | **31 条/秒** | 17 条/秒 |
+
+加载一个模型、再计算那 256 条长短混合文本，整个进程的内存峰值（最大常驻内存）：`all-MiniLM-L6-v2` 为 178 MB（0.6.2 为 1,715 MB），三个 12 层的模型为 219～234 MB（0.6.2 为 680～1,883 MB）。在那台 Linux 机器上：`all-MiniLM-L6-v2` 为 185 MB（0.6.2 为 1,009 MB），`all-MiniLM-L12-v2` 为 264 MB（0.6.2 为 572 MB）。F32 的权重文件直接映射进内存读取，文本不做补齐，每次最多约 4,096 个 token 一起算。
+
+0.6.2 和 embedrs 的矩阵乘法都在 Accelerate 里算，时间差在前向计算的其他部分：embedrs 的 GELU 用向量化的 erf（0.6.2 对每个值调用一次 `erff`），残差加法和层归一化合在一遍里做，注意力按每条文本、每个头分别计算，不补齐也不用掩码，只有调用的计算量够大时才把这些计算分给性能核。model2vec 在每一行都更快，因为它是另一类模型：静态向量模型只是在表里查出每个 token 的向量再求平均，没有 Transformer 层。这里列出它只是作为参照，在质量上它不能替代 Transformer 模型。
 
 ### 云端调用
 
@@ -80,12 +94,12 @@ embedrs = { version = "0.7", features = ["local"] }
 | feature | 默认 | 作用 |
 |---|---|---|
 | `reqwest` | 开 | HTTP 传输层，以及用到它的构造函数（`embedrs::cloud`、`Client::openai` 等）|
-| `local` | 关 | 用 candle 在本地推理（分词器编译在库里，权重首次使用时下载）|
+| `local` | 关 | 在本机 CPU 上推理，不引入依赖（分词器编译在库里，权重首次使用时下载）|
 | `cost-tracking` | 关 | `Usage::cost`，取自 tiktoken 的价格表（不会编译进任何分词器词表）|
 | `token-count` | 关 | 精确计算 OpenAI 的 token 数，用于拆分批量请求和拒绝超长文本（会编译进 `cl100k_base` 词表）|
 | `tracing` | 关 | 通过 `tracing` crate 输出 span 和事件 |
 
-macOS 上依赖树里的 crate 数（含 embedrs 自己，括号里是 0.6.2）：默认 84（101），开启 `local` 201（255），`default-features = false` 为 1，只开 `local` 不开 `reqwest` 为 137。`local` 的依赖几乎都来自 candle；其中 `candle-core` 会引入 `tokenizers`，embedrs 自己并不使用它。
+macOS 上依赖树里的 crate 数（含 embedrs 自己，括号里是 0.6.2）：默认 84（101），默认加 `local` 也是 84（255），`default-features = false` 为 1，只开 `local` 不开 `reqwest` 为 1。x86_64 Linux 上默认构建是 82 个。
 
 ## 快速开始
 
@@ -179,7 +193,7 @@ fn azure() -> Client {
 
 四个模型都输出 384 维、经过 L2 归一化的向量。输入类型为 `InputType::SearchQuery` 时，`bge-small-en-v1.5` 会在文本前加上它训练时用的查询指令。本地客户端的 `.model()` 可以换成另一个本地模型，`.dimensions()` 只接受 384，其他值都会报错。超长文本会被截断，`usage.total_tokens` 统计的是模型实际读入的 token 数。
 
-每个加载的模型有自己的线程，所以本地推理不需要异步运行时：`LocalModel::from_files` 加载你已有的权重文件，`embed_blocking` 计算完再返回。
+每个加载的模型有自己的线程，所以本地推理不需要异步运行时：`LocalModel::from_files` 加载你已有的权重文件（F32、F16 或 BF16 的 safetensors），`embed_blocking` 计算完再返回。一次调用的 token 超过几十个时，计算期间还会用上工作线程：macOS 上是性能核的个数，其他系统上是进程能用的全部核。线程数可以用 `EMBEDRS_THREADS` 设置；`EMBEDRS_THREADS=1` 让整个调用都在模型自己的线程上算（macOS 上 Accelerate 仍按 `VECLIB_MAXIMUM_THREADS` 决定线程数）。
 
 ## 批量向量化
 
