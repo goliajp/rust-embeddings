@@ -12,6 +12,8 @@ pub(super) fn body(ep: &Endpoint, call: &Call<'_>) -> Result<(String, Vec<u8>)> 
     let accepts = match ep.wire {
         Wire::Voyage => voyage_accepts_dimensions(model),
         Wire::Mistral => mistral_accepts_dimensions(model),
+        // `dimensions` exists from text-embedding-3 on
+        Wire::OpenAi if model == "text-embedding-ada-002" => Some(false),
         _ => None,
     };
     check_dimensions(model, call.dimensions, accepts)?;
@@ -66,7 +68,7 @@ pub(super) fn body(ep: &Endpoint, call: &Call<'_>) -> Result<(String, Vec<u8>)> 
     }
     match ep.wire {
         Wire::Jina => {
-            if let Some(task) = jina_task(model, call.input_type) {
+            if let Some(task) = jina_task(model, call.input_type)? {
                 w.raw(",\"task\":");
                 w.str(task);
             }
@@ -91,15 +93,35 @@ fn voyage_input_type(input_type: Option<InputType>) -> Option<&'static str> {
     })
 }
 
-fn jina_task(model: &str, input_type: Option<InputType>) -> Option<&'static str> {
-    input_type.map(|it| match it {
+/// The `task` for an input type. Each model family has its own list; an
+/// input type outside it is refused rather than sent and rejected.
+fn jina_task(model: &str, input_type: Option<InputType>) -> Result<Option<&'static str>> {
+    let Some(it) = input_type else {
+        return Ok(None);
+    };
+    let refuse = || Err(Error::unsupported(model, format!("input_type({it:?})")));
+    if model.starts_with("jina-code-embeddings") {
+        // its tasks are nl2code, qa, code2code and so on, none of the input types
+        return refuse();
+    }
+    if model.starts_with("jina-clip-v2") {
+        // documents go without a task
+        return match it {
+            InputType::SearchQuery => Ok(Some("retrieval.query")),
+            InputType::SearchDocument => Ok(None),
+            _ => refuse(),
+        };
+    }
+    Ok(Some(match it {
         InputType::SearchDocument => "retrieval.passage",
         InputType::SearchQuery => "retrieval.query",
+        // v4 has only retrieval, text-matching and code tasks
+        _ if model.starts_with("jina-embeddings-v4") => return refuse(),
         InputType::Classification => "classification",
         // v5 renamed v3's `separation` adapter to `clustering`
         InputType::Clustering if model.starts_with("jina-embeddings-v5") => "clustering",
         InputType::Clustering => "separation",
-    })
+    }))
 }
 
 // models with a single output width; newer models take `output_dimension`
@@ -306,6 +328,34 @@ mod tests {
     }
 
     #[test]
+    fn jina_tasks_by_model() {
+        use InputType::*;
+        let t = |m: &str, it| jina_task(m, Some(it)).ok();
+        assert_eq!(
+            t("jina-embeddings-v3", Clustering),
+            Some(Some("separation"))
+        );
+        assert_eq!(
+            t("jina-embeddings-v5-text-small", Clustering),
+            Some(Some("clustering"))
+        );
+        assert_eq!(
+            t("jina-embeddings-v4", SearchDocument),
+            Some(Some("retrieval.passage"))
+        );
+        assert_eq!(t("jina-embeddings-v4", Classification), None);
+        assert_eq!(t("jina-embeddings-v4", Clustering), None);
+        assert_eq!(
+            t("jina-clip-v2", SearchQuery),
+            Some(Some("retrieval.query"))
+        );
+        assert_eq!(t("jina-clip-v2", SearchDocument), Some(None));
+        assert_eq!(t("jina-clip-v2", Clustering), None);
+        assert_eq!(t("jina-code-embeddings-1.5b", SearchQuery), None);
+        assert_eq!(jina_task("jina-embeddings-v4", None).ok(), Some(None));
+    }
+
+    #[test]
     fn dimension_support_by_model() {
         for m in [
             "voyage-4-large",
@@ -325,5 +375,16 @@ mod tests {
         );
         assert_eq!(mistral_accepts_dimensions("mistral-embed"), Some(false));
         assert_eq!(mistral_accepts_dimensions("other"), None);
+        let ep = Endpoint::openai("k");
+        let inputs = crate::input::Inputs::from(&["x"][..]);
+        let call = |model| Call {
+            model,
+            inputs: &inputs,
+            dimensions: Some(256),
+            input_type: None,
+            truncate: Truncate::Provider,
+        };
+        assert!(body(&ep, &call("text-embedding-ada-002")).is_err());
+        assert!(body(&ep, &call("text-embedding-3-small")).is_ok());
     }
 }

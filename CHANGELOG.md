@@ -58,6 +58,12 @@ Behaviour that changes without a compile error:
 - **Downloading a local model is not under the call's timeout.**
 - A batch in which one request reports no token count has
   `total_tokens: None`; 0.6 added the others up.
+- **Options a model's API does not list are refused before sending**, with
+  `Error::Unsupported`: `dimensions` on `text-embedding-ada-002`; for Jina,
+  `Classification` and `Clustering` on `jina-embeddings-v4`, anything but
+  `SearchQuery` and `SearchDocument` on `jina-clip-v2`, and any input type on
+  the `jina-code-embeddings` models. A `SearchDocument` request to
+  `jina-clip-v2` goes without a `task`. 0.6 sent these and got a 4xx back.
 
 The requests themselves do not change: for every provider, model kind, input
 type and dimension setting that 0.6.2 was recorded with (510 cases), 0.7 sends
