@@ -6,13 +6,19 @@ pub(super) const MR: usize = 8;
 pub(super) const NR: usize = 12;
 const KC: usize = 512;
 
-/// C[0..8][0..12] += A[0..8][0..kc] · B panel; `a` holds 8 row pointers.
+/// C[0..R][0..12] += A[0..R][0..kc] · B panel; `a` holds R row pointers (R <= MR).
 #[inline(always)]
-unsafe fn kernel(kc: usize, a: &[*const f32; 8], b: *const f32, c: *mut f32, ldc: usize) {
+unsafe fn kernel<const R: usize>(
+    kc: usize,
+    a: &[*const f32; 8],
+    b: *const f32,
+    c: *mut f32,
+    ldc: usize,
+) {
     // safety: the tile loop passes kc readable values per row pointer, a
-    // panel of kc x 12 values at b, and 8 rows of 12 writable values at c
+    // panel of kc x 12 values at b, and R rows of 12 writable values at c
     unsafe {
-        let mut acc = [[vdupq_n_f32(0.0); 3]; MR];
+        let mut acc = [[vdupq_n_f32(0.0); 3]; R];
         for (r, row) in acc.iter_mut().enumerate() {
             for (j, v) in row.iter_mut().enumerate() {
                 *v = vld1q_f32(c.add(r * ldc + 4 * j));

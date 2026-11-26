@@ -7,14 +7,20 @@ pub(super) const NR: usize = 16;
 // keeps a kc x 16 panel block (16 KB) in a 32 KB L1
 const KC: usize = 256;
 
-/// C[0..6][0..16] += A[0..6][0..kc] · B panel; `a` holds 6 row pointers.
+/// C[0..R][0..16] += A[0..R][0..kc] · B panel; `a` holds R row pointers (R <= MR).
 #[inline]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn kernel(kc: usize, a: &[*const f32; 8], b: *const f32, c: *mut f32, ldc: usize) {
+unsafe fn kernel<const R: usize>(
+    kc: usize,
+    a: &[*const f32; 8],
+    b: *const f32,
+    c: *mut f32,
+    ldc: usize,
+) {
     // safety: the tile loop passes kc readable values per row pointer, a
-    // panel of kc x 16 values at b, and 6 rows of 16 writable values at c
+    // panel of kc x 16 values at b, and R rows of 16 writable values at c
     unsafe {
-        let mut acc = [[_mm256_setzero_ps(); 2]; MR];
+        let mut acc = [[_mm256_setzero_ps(); 2]; R];
         for (r, row) in acc.iter_mut().enumerate() {
             row[0] = _mm256_loadu_ps(c.add(r * ldc));
             row[1] = _mm256_loadu_ps(c.add(r * ldc + 8));

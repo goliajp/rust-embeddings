@@ -193,32 +193,46 @@ unsafe fn tile(
     }
 }
 
-/// The blocked loop over one tile, shared by every kernel family. `$kernel`
-/// computes a full MR x NR block of C in place; partial blocks go through a
+/// The blocked loop over one tile, shared by every kernel family.
+/// `$kernel::<R>` computes R rows by NR columns of C in place, so a partial
+/// row block costs only its rows; a partial column panel goes through a
 /// scratch tile.
 macro_rules! tile_loop {
     ($kernel:ident, $mr:expr, $nr:expr, $kc:expr $(, $feature:literal)?) => {
         #[allow(clippy::too_many_arguments)]
         $(#[target_feature(enable = $feature)])?
         pub(super) unsafe fn tile(data: &[f32], k: usize, n: usize, a: *const f32, lda: usize, c: *mut f32, ldc: usize, r0: usize, r1: usize, p0: usize, p1: usize) {
+            // safety (whole body): the caller bounds rows r0..r1 of a and c
+            // and columns of c up to n; a kernel touches only `rows` rows
+            let run = |rows: usize, kc: usize, ap: &[*const f32; 8], bp: *const f32, c: *mut f32, ldc: usize| unsafe {
+                match rows {
+                    1 => $kernel::<1>(kc, ap, bp, c, ldc),
+                    2 => $kernel::<2>(kc, ap, bp, c, ldc),
+                    3 => $kernel::<3>(kc, ap, bp, c, ldc),
+                    4 => $kernel::<4>(kc, ap, bp, c, ldc),
+                    5 if $mr >= 5 => $kernel::<5>(kc, ap, bp, c, ldc),
+                    6 if $mr >= 6 => $kernel::<6>(kc, ap, bp, c, ldc),
+                    7 if $mr >= 7 => $kernel::<7>(kc, ap, bp, c, ldc),
+                    8 if $mr >= 8 => $kernel::<8>(kc, ap, bp, c, ldc),
+                    _ => unreachable!("row block larger than the kernel"),
+                }
+            };
             let mut kc0 = 0;
             while kc0 < k {
                 let kc = ($kc).min(k - kc0);
                 for p in p0..p1 {
                     let cols = ($nr).min(n - p * $nr);
-                    // safety (whole body): the caller bounds rows r0..r1 of
-                    // a and c and columns of c up to n
                     let bp = unsafe { data.as_ptr().add(p * k * $nr + kc0 * $nr) };
                     let mut r = r0;
                     while r < r1 {
                         let rows = ($mr).min(r1 - r);
                         let mut ap = [std::ptr::null(); 8];
-                        for (i, q) in ap.iter_mut().take($mr).enumerate() {
-                            *q = unsafe { a.add((r + i).min(r1 - 1) * lda + kc0) };
+                        for (i, q) in ap.iter_mut().take(rows).enumerate() {
+                            *q = unsafe { a.add((r + i) * lda + kc0) };
                         }
                         let cp = unsafe { c.add(r * ldc + p * $nr) };
-                        if rows == $mr && cols == $nr {
-                            unsafe { $kernel(kc, &ap, bp, cp, ldc) };
+                        if cols == $nr {
+                            run(rows, kc, &ap, bp, cp, ldc);
                         } else {
                             let mut t = [0f32; $mr * $nr];
                             for i in 0..rows {
@@ -226,7 +240,7 @@ macro_rules! tile_loop {
                                     t[i * $nr + j] = unsafe { *cp.add(i * ldc + j) };
                                 }
                             }
-                            unsafe { $kernel(kc, &ap, bp, t.as_mut_ptr(), $nr) };
+                            run(rows, kc, &ap, bp, t.as_mut_ptr(), $nr);
                             for i in 0..rows {
                                 for j in 0..cols {
                                     unsafe { *cp.add(i * ldc + j) = t[i * $nr + j] };
