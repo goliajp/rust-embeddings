@@ -16,7 +16,6 @@ mod neon;
 mod portable;
 
 use super::pool::{self, Par, Shared};
-use super::safetensors::F32s;
 
 /// The kernel family a packed matrix was laid out for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,25 +256,36 @@ macro_rules! tile_loop {
 }
 pub(crate) use tile_loop;
 
-/// A linear layer's weight, (n outputs, k inputs) as stored by PyTorch.
+/// A linear layer's weight, given as (n outputs, k inputs) the way PyTorch
+/// stores it, kept as Wᵀ (k, n) for Accelerate on macOS and in panels for the
+/// own kernels elsewhere. Accelerate reads a transposed operand several times
+/// slower for the short inputs of one text, so the copy is worth its memory.
 pub(crate) struct Weight {
     n: usize,
     k: usize,
     #[cfg(target_os = "macos")]
-    w: F32s,
+    w: Vec<f32>,
     #[cfg(not(target_os = "macos"))]
     w: Packed,
 }
 
 impl Weight {
-    pub(crate) fn new(w: F32s, n: usize, k: usize) -> Self {
+    pub(crate) fn new(w: &[f32], n: usize, k: usize) -> Self {
         assert_eq!(w.len(), n * k);
         #[cfg(target_os = "macos")]
-        return Self { n, k, w };
+        {
+            let mut t = vec![0f32; n * k];
+            for (o, row) in w.chunks_exact(k).enumerate() {
+                for (i, &v) in row.iter().enumerate() {
+                    t[i * n + o] = v;
+                }
+            }
+            Self { n, k, w: t }
+        }
         #[cfg(not(target_os = "macos"))]
         {
             let mut p = Packed::new(Isa::detect());
-            p.pack_t(&w, k, n, k);
+            p.pack_t(w, k, n, k);
             Self { n, k, w: p }
         }
     }
@@ -287,7 +297,7 @@ pub(crate) fn linear(a: &[f32], m: usize, w: &Weight, c: &mut [f32], par: Par) {
     #[cfg(target_os = "macos")]
     {
         let _ = par;
-        accelerate::sgemm(true, m, w.n, w.k, a, w.k, &w.w, w.k, 1.0, c, w.n);
+        accelerate::sgemm(false, m, w.n, w.k, a, w.k, &w.w, w.n, 1.0, c, w.n);
     }
     #[cfg(not(target_os = "macos"))]
     gemm(m, a, w.k, &w.w, c, w.n, par);

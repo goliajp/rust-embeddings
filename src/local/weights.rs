@@ -1,8 +1,9 @@
 //! A BERT encoder's weights, laid out for the forward pass. Query, key and
 //! value are fused into one matrix with the attention scale folded into the
-//! query rows; position and token-type embeddings are pre-added. Everything
-//! else is used as stored: on macOS the f32 matrices are read in place from
-//! the mapped file.
+//! query rows; position and token-type embeddings are pre-added. The matrices
+//! are laid out for the matrix products (see `gemm::Weight`); the word
+//! embeddings, of which a call touches only the rows of its tokens, are read
+//! in place from the mapped file.
 
 use std::path::Path;
 
@@ -63,7 +64,7 @@ impl Reader<'_> {
 
     fn linear(&self, name: &str, n: usize, k: usize) -> Result<Linear> {
         Ok(Linear {
-            w: Weight::new(self.get(&format!("{name}.weight"), &[n, k])?, n, k),
+            w: Weight::new(&self.get(&format!("{name}.weight"), &[n, k])?, n, k),
             b: self.vec(&format!("{name}.bias"), n)?,
         })
     }
@@ -89,7 +90,7 @@ impl Reader<'_> {
         }
         Ok(Layer {
             qkv: Linear {
-                w: Weight::new(F32s::Owned(w), 3 * h, h),
+                w: Weight::new(&w, 3 * h, h),
                 b,
             },
             out: self.linear(&format!("{p}attention.output.dense"), h, h)?,
