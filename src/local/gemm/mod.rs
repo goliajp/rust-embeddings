@@ -58,9 +58,21 @@ impl Isa {
             Self::Portable => portable::MR,
         }
     }
+
+    fn kc(self) -> usize {
+        match self {
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon => neon::KC,
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2 => avx2::KC,
+            Self::Portable => portable::KC,
+        }
+    }
 }
 
-/// B (k, n) in panels for one kernel family; reusable as a buffer.
+/// B (k, n) in panels for one kernel family; reusable as a buffer. The k
+/// rows are cut into blocks of KC, and within a block the panels follow one
+/// another, each (block rows, NR); a product walks the data front to back.
 pub(crate) struct Packed {
     isa: Isa,
     data: Vec<f32>,
@@ -79,14 +91,16 @@ impl Packed {
     }
 
     fn fill(&mut self, k: usize, n: usize, at: impl Fn(usize, usize) -> f32) {
-        let nr = self.isa.nr();
+        let (nr, kc) = (self.isa.nr(), self.isa.kc());
         let panels = n.div_ceil(nr);
         self.data.clear();
         self.data.reserve(panels * k * nr);
-        for p in 0..panels {
-            for kk in 0..k {
-                for j in p * nr..p * nr + nr {
-                    self.data.push(if j < n { at(kk, j) } else { 0.0 });
+        for k0 in (0..k).step_by(kc) {
+            for p in 0..panels {
+                for kk in k0..(k0 + kc).min(k) {
+                    for j in p * nr..p * nr + nr {
+                        self.data.push(if j < n { at(kk, j) } else { 0.0 });
+                    }
                 }
             }
         }
@@ -197,7 +211,7 @@ unsafe fn tile(
 /// row block costs only its rows; a partial column panel goes through a
 /// scratch tile.
 macro_rules! tile_loop {
-    ($kernel:ident, $mr:expr, $nr:expr, $kc:expr $(, $feature:literal)?) => {
+    ($kernel:ident, $mr:expr, $nr:expr, $kc:expr, $mc:expr $(, $feature:literal)?) => {
         #[allow(clippy::too_many_arguments)]
         $(#[target_feature(enable = $feature)])?
         pub(super) unsafe fn tile(data: &[f32], k: usize, n: usize, a: *const f32, lda: usize, c: *mut f32, ldc: usize, r0: usize, r1: usize, p0: usize, p1: usize) {
@@ -216,15 +230,21 @@ macro_rules! tile_loop {
                     _ => unreachable!("row block larger than the kernel"),
                 }
             };
+            let np = n.div_ceil($nr);
             let mut kc0 = 0;
             while kc0 < k {
                 let kc = ($kc).min(k - kc0);
+                // rows in blocks of MC, so the A rows of a block stay in L2
+                // while every panel of this k block passes over them
+                let mut m0 = r0;
+                while m0 < r1 {
+                let m1 = (m0 + $mc).min(r1);
                 for p in p0..p1 {
                     let cols = ($nr).min(n - p * $nr);
-                    let bp = unsafe { data.as_ptr().add(p * k * $nr + kc0 * $nr) };
-                    let mut r = r0;
-                    while r < r1 {
-                        let rows = ($mr).min(r1 - r);
+                    let bp = unsafe { data.as_ptr().add(kc0 * np * $nr + p * kc * $nr) };
+                    let mut r = m0;
+                    while r < m1 {
+                        let rows = ($mr).min(m1 - r);
                         let mut ap = [std::ptr::null(); 8];
                         for (i, q) in ap.iter_mut().take(rows).enumerate() {
                             *q = unsafe { a.add((r + i) * lda + kc0) };
@@ -248,6 +268,8 @@ macro_rules! tile_loop {
                         }
                         r += $mr;
                     }
+                }
+                m0 = m1;
                 }
                 kc0 += $kc;
             }

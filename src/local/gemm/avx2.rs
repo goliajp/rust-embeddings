@@ -5,7 +5,9 @@ use std::arch::x86_64::*;
 pub(super) const MR: usize = 6;
 pub(super) const NR: usize = 16;
 // keeps a kc x 16 panel block (16 KB) in a 32 KB L1
-const KC: usize = 256;
+pub(super) const KC: usize = 256;
+// panel rows ahead to prefetch (one 64-byte line each)
+const PREFETCH: usize = 16;
 
 /// C[0..R][0..16] += A[0..R][0..kc] · B panel; `a` holds R row pointers (R <= MR).
 #[inline]
@@ -27,6 +29,10 @@ unsafe fn kernel<const R: usize>(
         }
         for k in 0..kc {
             let bp = b.add(k * NR);
+            // the packed data is read front to back; fetching ahead keeps the
+            // weights streaming when they come from memory, not cache. The
+            // address may run past the panel, which a prefetch allows
+            _mm_prefetch::<_MM_HINT_T0>(bp.wrapping_add(PREFETCH * NR) as *const i8);
             let (b0, b1) = (_mm256_loadu_ps(bp), _mm256_loadu_ps(bp.add(8)));
             for (r, row) in acc.iter_mut().enumerate() {
                 let x = _mm256_broadcast_ss(&*a[r].add(k));
@@ -41,4 +47,4 @@ unsafe fn kernel<const R: usize>(
     }
 }
 
-super::tile_loop!(kernel, MR, NR, KC, "avx2,fma");
+super::tile_loop!(kernel, MR, NR, KC, 96, "avx2,fma");

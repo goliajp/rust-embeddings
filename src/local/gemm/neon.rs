@@ -4,7 +4,7 @@ use std::arch::aarch64::*;
 
 pub(super) const MR: usize = 8;
 pub(super) const NR: usize = 12;
-const KC: usize = 512;
+pub(super) const KC: usize = 512;
 
 /// C[0..R][0..12] += A[0..R][0..kc] · B panel; `a` holds R row pointers (R <= MR).
 #[inline(always)]
@@ -42,4 +42,4 @@ unsafe fn kernel<const R: usize>(
     }
 }
 
-super::tile_loop!(kernel, MR, NR, KC);
+super::tile_loop!(kernel, MR, NR, KC, 128);
