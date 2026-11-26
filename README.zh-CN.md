@@ -28,7 +28,7 @@ embedrs 是一个异步的 Rust 文本向量化（embedding）客户端。六家
 
 ### 本地推理
 
-模型 `all-MiniLM-L6-v2`，在同一个进程里对比 0.6.2（基于 candle）、[fastembed](https://crates.io/crates/fastembed) 7.8.0（ONNX Runtime，同一个模型，同样在 256 个 token 处截断）和 [model2vec-rs](https://crates.io/crates/model2vec-rs) 0.5.1（模型 `potion-base-8M`）。输出的向量与 0.6.2 的差别每个分量不超过 3.3e-7（38 条文本，四个模型都比过，余弦相似度与 1 相差不到 2e-12）；0.6.2 与 fastembed 在 32 条长度不一的文本上，余弦相似度最低为 1.000000。单条文本长 8、40、180 个英文单词（13、56、227 个 token），批量是 256 条 8、40 或 180 个词的文本，另有一组 4 到 200 个词混合的文本。单条文本取 200 次调用的中位数（单线程时取 30 次），批量取 5 轮的中位数。每 10 秒采一次 1 分钟平均负载，最高 8.3（包含测试程序自己的线程和开头的编译）。「单线程」指 embedrs 设置 `EMBEDRS_THREADS=1 VECLIB_MAXIMUM_THREADS=1`，0.6.2 设置 `RAYON_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1`，fastembed 只用一个算子内线程。
+模型 `all-MiniLM-L6-v2`，在同一个进程里对比 0.6.2（基于 candle）、[fastembed](https://crates.io/crates/fastembed) 7.8.0（ONNX Runtime，同一个模型，同样在 256 个 token 处截断）和 [model2vec-rs](https://crates.io/crates/model2vec-rs) 0.5.1（模型 `potion-base-8M`）。输出的向量与 0.6.2 的差别每个分量不超过 3.3e-7（38 条文本，四个模型都比过，余弦相似度与 1 相差不到 2e-12）；0.6.2 与 fastembed 在 32 条长度不一的文本上，余弦相似度最低为 1.000000。单条文本长 8、40、180 个英文单词（13、56、227 个 token），批量是 256 条 8、40 或 180 个词的文本，另有一组 4 到 200 个词混合的文本。单条文本取 200 次调用的中位数（单线程时取 30 次），批量取 5 轮的中位数。每 10 秒采一次 1 分钟平均负载，最高 8.3（包含测试程序自己的线程和开头的编译）。「单线程」指 embedrs 用 `LocalModel::with_threads(1)` 并设置 `VECLIB_MAXIMUM_THREADS=1`，0.6.2 设置 `RAYON_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1`，fastembed 只用一个算子内线程。
 
 | 默认线程数 | 0.6.2 | **embedrs** | fastembed | model2vec |
 |---|---|---|---|---|
@@ -62,7 +62,7 @@ embedrs 是一个异步的 Rust 文本向量化（embedding）客户端。六家
 | 256 条，180 词 | 33 条/秒 | **110 条/秒** | 62 条/秒 | 10 条/秒 | **17 条/秒** | 17 条/秒 |
 | 256 条，长短混合 | 49 条/秒 | **202 条/秒** | 62 条/秒 | 15 条/秒 | **31 条/秒** | 17 条/秒 |
 
-加载一个模型、再计算那 256 条长短混合文本，整个进程的内存峰值（最大常驻内存）：`all-MiniLM-L6-v2` 为 178 MB（0.6.2 为 1,715 MB），三个 12 层的模型为 219～234 MB（0.6.2 为 680～1,883 MB）。在那台 Linux 机器上：`all-MiniLM-L6-v2` 为 185 MB（0.6.2 为 1,009 MB），`all-MiniLM-L12-v2` 为 264 MB（0.6.2 为 572 MB）。F32 的权重文件直接映射进内存读取，文本不做补齐，每次最多约 4,096 个 token 一起算。
+加载一个模型、再计算那 256 条长短混合文本，整个进程的内存峰值（最大常驻内存）：`all-MiniLM-L6-v2` 为 178 MB（0.6.2 为 1,715 MB），三个 12 层的模型为 219～234 MB（0.6.2 为 680～1,883 MB）。在那台 Linux 机器上：`all-MiniLM-L6-v2` 为 185 MB（0.6.2 为 1,009 MB），`all-MiniLM-L12-v2` 为 264 MB（0.6.2 为 572 MB）。词向量表直接从映射进内存的权重文件里读，各个矩阵在加载时复制一份、排成矩阵乘法读得最快的布局；文本不做补齐，每次最多约 4,096 个 token 一起算。
 
 0.6.2 和 embedrs 的矩阵乘法都在 Accelerate 里算，时间差在前向计算的其他部分：embedrs 的 GELU 用向量化的 erf（0.6.2 对每个值调用一次 `erff`），残差加法和层归一化合在一遍里做，注意力按每条文本、每个头分别计算，不补齐也不用掩码，只有调用的计算量够大时才把这些计算分给性能核。model2vec 在每一行都更快，因为它是另一类模型：静态向量模型只是在表里查出每个 token 的向量再求平均，没有 Transformer 层。这里列出它只是作为参照，在质量上它不能替代 Transformer 模型。
 
@@ -193,7 +193,7 @@ fn azure() -> Client {
 
 四个模型都输出 384 维、经过 L2 归一化的向量。输入类型为 `InputType::SearchQuery` 时，`bge-small-en-v1.5` 会在文本前加上它训练时用的查询指令。本地客户端的 `.model()` 可以换成另一个本地模型，`.dimensions()` 只接受 384，其他值都会报错。超长文本会被截断，`usage.total_tokens` 统计的是模型实际读入的 token 数。
 
-每个加载的模型有自己的线程，所以本地推理不需要异步运行时：`LocalModel::from_files` 加载你已有的权重文件（F32、F16 或 BF16 的 safetensors），`embed_blocking` 计算完再返回。一次调用的 token 超过几十个时，计算期间还会用上工作线程：macOS 上是性能核的个数，其他系统上是进程能用的全部核。线程数可以用 `EMBEDRS_THREADS` 设置；`EMBEDRS_THREADS=1` 让整个调用都在模型自己的线程上算（macOS 上 Accelerate 仍按 `VECLIB_MAXIMUM_THREADS` 决定线程数）。
+每个加载的模型有自己的线程，所以本地推理不需要异步运行时：`LocalModel::from_files` 加载你已有的权重文件（F32、F16 或 BF16 的 safetensors），`embed_blocking` 计算完再返回。一次调用的 token 超过几十个时，计算期间还会用上工作线程：macOS 上是性能核的个数，其他系统上是进程能用的全部核。`LocalModel::with_threads(n)` 限制通过这个句柄发起的调用最多用几个线程；`with_threads(1)` 让每次调用都只在模型自己的线程上算（macOS 上 Accelerate 自己的线程数由 `VECLIB_MAXIMUM_THREADS` 决定）。把句柄交给 `Client::from_local`，就能通过客户端使用这个设置。
 
 ## 批量向量化
 

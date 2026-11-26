@@ -35,15 +35,32 @@ fn exp_is_close_to_f64() {
 }
 
 #[test]
-fn softmax_sums_to_one() {
+fn vector_exp_gives_the_scalar_bits() {
+    let src: Vec<f32> = (0..4099).map(|i| -95.0 + i as f32 * 0.0473).collect();
+    let mut x = src.clone();
+    exp_minus(&mut x, 1.5);
+    for (v, g) in src.iter().zip(&x) {
+        assert_eq!(g.to_bits(), exp(v - 1.5).to_bits(), "{v}");
+    }
+}
+
+#[test]
+fn softmax_rows_match_f64() {
     for n in [1, 7, 8, 13, 233] {
-        let mut x: Vec<f32> = (0..n).map(|i| (i as f32 * 0.7).sin() * 9.0).collect();
-        let max = x.iter().cloned().fold(f32::MIN, f32::max) as f64;
-        let denom: f64 = x.iter().map(|&v| (v as f64 - max).exp()).sum();
-        let want: Vec<f64> = x.iter().map(|&v| (v as f64 - max).exp() / denom).collect();
-        softmax(&mut x);
-        for (g, w) in x.iter().zip(&want) {
-            assert!((*g as f64 - w).abs() < 1e-6, "{n}: {g} vs {w}");
+        let src: Vec<f32> = (0..3 * n).map(|i| (i as f32 * 0.7).sin() * 9.0).collect();
+        let mut x = src.clone();
+        let mut inv = vec![0f32; 3];
+        softmax_rows(&mut x, n, &mut inv);
+        for ((row, out), inv) in src.chunks(n).zip(x.chunks(n)).zip(&inv) {
+            let max = row.iter().cloned().fold(f32::MIN, f32::max) as f64;
+            let denom: f64 = row.iter().map(|&v| (v as f64 - max).exp()).sum();
+            for (v, g) in row.iter().zip(out) {
+                let want = (*v as f64 - max).exp() / denom;
+                assert!(
+                    (*g as f64 * *inv as f64 - want).abs() < 1e-6,
+                    "{n}: {g} vs {want}"
+                );
+            }
         }
     }
 }

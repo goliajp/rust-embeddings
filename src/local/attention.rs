@@ -12,6 +12,7 @@ use super::pool::{self, Par, Shared};
 /// Per-thread buffers.
 pub(crate) struct Scratch {
     scores: Vec<f32>,
+    inv: Vec<f32>,
     kt: Packed,
     v: Packed,
 }
@@ -21,6 +22,7 @@ impl Scratch {
         let isa = Isa::detect();
         Self {
             scores: Vec::new(),
+            inv: Vec::new(),
             kt: Packed::new(isa),
             v: Packed::new(isa),
         }
@@ -77,20 +79,40 @@ pub(crate) fn attention(
         let v = &qkv[o * w + 2 * h + hd * d..];
         sc.scores.clear();
         sc.scores.resize(m * s, 0.0);
+        sc.inv.resize(m, 0.0);
         // safety: this item alone writes rows row..row+m, columns hd*d..hd*d+d
         let c = unsafe { out.get().add(row * h + hd * d) };
         #[cfg(target_os = "macos")]
         if s >= ACCELERATE_MIN {
             use gemm::accelerate::{sgemm, sgemm_ptr};
             sgemm(true, m, s, d, q, w, k, w, 0.0, &mut sc.scores, s);
-            sc.scores.chunks_exact_mut(s).for_each(ops::softmax);
-            unsafe { sgemm_ptr(false, m, d, s, &sc.scores, s, v, w, 0.0, c, h) };
+            ops::softmax_rows(&mut sc.scores, s, &mut sc.inv);
+            unsafe {
+                sgemm_ptr(false, m, d, s, &sc.scores, s, v, w, 0.0, c, h);
+                scale_rows(c, h, d, &sc.inv);
+            }
             return;
         }
         sc.kt.pack_t(k, w, s, d);
         gemm::gemm(m, q, w, &sc.kt, &mut sc.scores, s, None);
-        sc.scores.chunks_exact_mut(s).for_each(ops::softmax);
+        ops::softmax_rows(&mut sc.scores, s, &mut sc.inv);
         sc.v.pack(v, w, s, d);
-        unsafe { gemm::gemm_ptr(m, &sc.scores, s, &sc.v, c, h, None) };
+        unsafe {
+            gemm::gemm_ptr(m, &sc.scores, s, &sc.v, c, h, None);
+            scale_rows(c, h, d, &sc.inv);
+        }
     });
+}
+
+/// Row i of the (rows, d) block at `c` (row stride `ld`) times `inv[i]`.
+///
+/// # Safety
+/// `c` must be valid for `inv.len()` rows of `d` values at stride `ld`, and
+/// no other thread may touch them.
+unsafe fn scale_rows(c: *mut f32, ld: usize, d: usize, inv: &[f32]) {
+    for (i, &f) in inv.iter().enumerate() {
+        // safety: forwarded from the caller
+        let row = unsafe { std::slice::from_raw_parts_mut(c.add(i * ld), d) };
+        row.iter_mut().for_each(|v| *v *= f);
+    }
 }

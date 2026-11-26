@@ -100,8 +100,8 @@ any component (38 texts, all four models; cosine 1 − 2e-12 or closer).
 - Feature `token-count`: exact OpenAI token counts for batch planning, from
   tiktoken's `cl100k_base`.
 - `local::LocalModel`: load a model up front, from a file
-  (`LocalModel::from_files`), or embed without an async runtime
-  (`embed_blocking`).
+  (`LocalModel::from_files`), embed without an async runtime
+  (`embed_blocking`), or cap the threads of each call (`with_threads`).
 - `Retry-After` is also read as an HTTP date.
 
 ### Changed
@@ -120,11 +120,12 @@ any component (38 texts, all four models; cosine 1 − 2e-12 or closer).
 - Local inference runs on one worker thread per model instead of tokio's
   blocking pool, so it needs no runtime. A call with enough tokens adds
   threads for the length of the call: the performance cores on macOS, all
-  available cores elsewhere, or `EMBEDRS_THREADS`.
+  available cores elsewhere, or as many as `LocalModel::with_threads` allows.
 - Local texts are no longer padded: each call's texts run unpadded in chunks
   of about 4096 tokens.
-- F32 weight files are mapped and read in place; F16 and BF16 files are
-  widened to f32 when loaded.
+- Weight files are mapped; the word embeddings are read in place, the
+  matrices copied into the layout the matrix products want. F16 and BF16
+  files are widened to f32 when loaded.
 - All vectors of a result share one buffer.
 
 ### Performance
