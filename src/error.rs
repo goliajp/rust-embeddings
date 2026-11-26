@@ -23,8 +23,10 @@ pub enum Error {
         /// When the provider says to retry: the `Retry-After` header (seconds
         /// or an HTTP date); without it, the later of OpenAI's
         /// `x-ratelimit-reset-requests` and `x-ratelimit-reset-tokens`, or
-        /// the `retryDelay` of a Gemini error. Retries wait this long, up to
-        /// the backoff's `max`.
+        /// the `retryDelay` of a Gemini error. Retries wait exactly this long;
+        /// a hint longer than the backoff's `max` ends the retries, and the
+        /// error is returned with the hint so the caller can schedule the
+        /// next attempt.
         retry_after: Option<Duration>,
         /// Which provider answered (`"openai"`, `"cohere"`, ...).
         provider: &'static str,

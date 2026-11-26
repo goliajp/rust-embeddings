@@ -44,7 +44,8 @@ impl Backoff {
         Self { base: d, ..self }
     }
 
-    /// Upper bound of any delay.
+    /// Longest wait between attempts; a server asking for longer ends the
+    /// retries, and the error carries its hint in `Error::Api::retry_after`.
     pub fn max(self, d: Duration) -> Self {
         Self { max: d, ..self }
     }
@@ -64,9 +65,9 @@ impl Backoff {
         self.retries
     }
 
-    /// A server's retry hint, no longer than [`max`](Self::max).
-    pub(crate) fn cap(&self, hint: Duration) -> Duration {
-        hint.min(self.max)
+    /// Whether a server's retry hint is short enough to wait for.
+    pub(crate) fn will_wait(&self, hint: Duration) -> bool {
+        hint <= self.max
     }
 
     /// Delay before retry number `attempt` (0-based):

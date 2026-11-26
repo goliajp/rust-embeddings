@@ -71,8 +71,10 @@ Behaviour that changes without a compile error:
   OpenAI-compatible servers still get them.
 - **Retries also follow OpenAI's `x-ratelimit-reset-requests` and
   `x-ratelimit-reset-tokens`** (the later of the two) and the `retryDelay` of
-  a Gemini error when there is no `Retry-After`. Every server hint, including
-  `Retry-After`, is now capped by the backoff's `max`.
+  a Gemini error when there is no `Retry-After`. A server hint up to the
+  backoff's `max` is waited in full; a longer one ends the retries at once
+  and the error carries it in `Error::Api::retry_after`. 0.6 waited for any
+  `Retry-After`, however long.
 - Token counts written with a zero fraction (`2.0`) are read; other
   fractions are a decode error.
 
