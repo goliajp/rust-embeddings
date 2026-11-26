@@ -90,34 +90,49 @@ impl Packed {
         }
     }
 
-    fn fill(&mut self, k: usize, n: usize, at: impl Fn(usize, usize) -> f32) {
+    /// Zeroed storage for (k, n); returns (NR, KC, panels).
+    fn shape(&mut self, k: usize, n: usize) -> (usize, usize, usize) {
         let (nr, kc) = (self.isa.nr(), self.isa.kc());
         let panels = n.div_ceil(nr);
         self.data.clear();
-        self.data.reserve(panels * k * nr);
-        for k0 in (0..k).step_by(kc) {
-            for p in 0..panels {
-                for kk in k0..(k0 + kc).min(k) {
-                    for j in p * nr..p * nr + nr {
-                        self.data.push(if j < n { at(kk, j) } else { 0.0 });
-                    }
-                }
-            }
-        }
+        self.data.resize(panels * k * nr, 0.0);
         self.k = k;
         self.n = n;
+        (nr, kc, panels)
     }
 
     /// B[kk][j] = src[kk * ld + j].
     pub(crate) fn pack(&mut self, src: &[f32], ld: usize, k: usize, n: usize) {
         assert!(k > 0 && n > 0 && src.len() >= (k - 1) * ld + n);
-        self.fill(k, n, |kk, j| src[kk * ld + j]);
+        let (nr, kc, panels) = self.shape(k, n);
+        for k0 in (0..k).step_by(kc) {
+            let len = kc.min(k - k0);
+            let block = &mut self.data[k0 * panels * nr..(k0 + len) * panels * nr];
+            for kk in 0..len {
+                let row = &src[(k0 + kk) * ld..(k0 + kk) * ld + n];
+                for (p, part) in row.chunks(nr).enumerate() {
+                    let o = (p * len + kk) * nr;
+                    block[o..o + part.len()].copy_from_slice(part);
+                }
+            }
+        }
     }
 
     /// B[kk][j] = src[j * ld + kk]: B given as its transpose, n rows of k.
     pub(crate) fn pack_t(&mut self, src: &[f32], ld: usize, n: usize, k: usize) {
         assert!(k > 0 && n > 0 && src.len() >= (n - 1) * ld + k);
-        self.fill(k, n, |kk, j| src[j * ld + kk]);
+        let (nr, kc, panels) = self.shape(k, n);
+        for k0 in (0..k).step_by(kc) {
+            let len = kc.min(k - k0);
+            let block = &mut self.data[k0 * panels * nr..(k0 + len) * panels * nr];
+            for j in 0..n {
+                let col = &src[j * ld + k0..j * ld + k0 + len];
+                let base = (j / nr) * len * nr + j % nr;
+                for (kk, &v) in col.iter().enumerate() {
+                    block[base + kk * nr] = v;
+                }
+            }
+        }
     }
 }
 
