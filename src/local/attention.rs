@@ -5,9 +5,9 @@
 
 use std::sync::Mutex;
 
-use super::gemm::{self, Isa, Packed};
-use super::ops;
+use super::gemm::{self, Init, Isa, Packed};
 use super::pool::{self, Par, Shared};
+use super::softmax::softmax_rows;
 
 /// Per-thread buffers.
 pub(crate) struct Scratch {
@@ -42,8 +42,7 @@ pub(crate) enum Queries {
     First,
 }
 
-/// `ctx` (rows, hidden) gets each head's output; it must be zero where the
-/// own kernels accumulate. `seqs` holds (first token, length) per sequence;
+/// `ctx` (rows, hidden) gets each head's output. `seqs` holds (first token, length) per sequence;
 /// `h` is the hidden size.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn attention(
@@ -77,28 +76,32 @@ pub(crate) fn attention(
         let q = &qkv[o * w + hd * d..];
         let k = &qkv[o * w + h + hd * d..];
         let v = &qkv[o * w + 2 * h + hd * d..];
-        sc.scores.clear();
-        sc.scores.resize(m * s, 0.0);
         sc.inv.resize(m, 0.0);
         // safety: this item alone writes rows row..row+m, columns hd*d..hd*d+d
         let c = unsafe { out.get().add(row * h + hd * d) };
         #[cfg(target_os = "macos")]
         if s >= ACCELERATE_MIN {
             use gemm::accelerate::{sgemm, sgemm_ptr};
+            sc.scores.resize(m * s, 0.0);
             sgemm(true, m, s, d, q, w, k, w, 0.0, &mut sc.scores, s);
-            ops::softmax_rows(&mut sc.scores, s, &mut sc.inv);
+            softmax_rows(&mut sc.scores, s, s, &mut sc.inv);
             unsafe {
                 sgemm_ptr(false, m, d, s, &sc.scores, s, v, w, 0.0, c, h);
                 scale_rows(c, h, d, &sc.inv);
             }
             return;
         }
+        // score rows padded to whole panels: no partial panel to go through
+        // a scratch tile, and the softmax ignores the padding
         sc.kt.pack_t(k, w, s, d);
-        gemm::gemm(m, q, w, &sc.kt, &mut sc.scores, s, None);
-        ops::softmax_rows(&mut sc.scores, s, &mut sc.inv);
+        sc.kt.pad();
+        let sp = sc.kt.n();
+        sc.scores.resize(m * sp, 0.0);
+        gemm::gemm(m, q, w, &sc.kt, &mut sc.scores, sp, Init::Zero, None);
+        softmax_rows(&mut sc.scores, s, sp, &mut sc.inv);
         sc.v.pack(v, w, s, d);
         unsafe {
-            gemm::gemm_ptr(m, &sc.scores, s, &sc.v, c, h, None);
+            gemm::gemm_ptr(m, &sc.scores, sp, &sc.v, c, h, Init::Zero, None);
             scale_rows(c, h, d, &sc.inv);
         }
     });

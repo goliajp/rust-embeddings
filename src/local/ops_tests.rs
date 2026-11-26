@@ -25,47 +25,6 @@ fn erf_and_gelu_are_close_to_f64() {
 }
 
 #[test]
-fn exp_is_close_to_f64() {
-    let mut worst = 0f64;
-    for x in sweep(-87.0, 88.0, 400_001) {
-        let e = (x as f64).exp();
-        worst = worst.max(((exp(x) as f64) - e).abs() / e);
-    }
-    assert!(worst < 2e-7, "{worst:e}");
-}
-
-#[test]
-fn vector_exp_gives_the_scalar_bits() {
-    let src: Vec<f32> = (0..4099).map(|i| -95.0 + i as f32 * 0.0473).collect();
-    let mut x = src.clone();
-    exp_minus(&mut x, 1.5);
-    for (v, g) in src.iter().zip(&x) {
-        assert_eq!(g.to_bits(), exp(v - 1.5).to_bits(), "{v}");
-    }
-}
-
-#[test]
-fn softmax_rows_match_f64() {
-    for n in [1, 7, 8, 13, 233] {
-        let src: Vec<f32> = (0..3 * n).map(|i| (i as f32 * 0.7).sin() * 9.0).collect();
-        let mut x = src.clone();
-        let mut inv = vec![0f32; 3];
-        softmax_rows(&mut x, n, &mut inv);
-        for ((row, out), inv) in src.chunks(n).zip(x.chunks(n)).zip(&inv) {
-            let max = row.iter().cloned().fold(f32::MIN, f32::max) as f64;
-            let denom: f64 = row.iter().map(|&v| (v as f64 - max).exp()).sum();
-            for (v, g) in row.iter().zip(out) {
-                let want = (*v as f64 - max).exp() / denom;
-                assert!(
-                    (*g as f64 * *inv as f64 - want).abs() < 1e-6,
-                    "{n}: {g} vs {want}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
 fn layernorm_matches_f64() {
     let h = 384;
     let mut x: Vec<f32> = (0..3 * h)

@@ -20,6 +20,7 @@ mod pool;
 #[cfg(test)]
 mod reference;
 mod safetensors;
+mod softmax;
 mod weights;
 mod wordpiece;
 

@@ -188,8 +188,6 @@ fn unsupported_options_are_refused_before_sending() {
         c.embed(["a"]).dimensions(64).prepare(),
         Err(Error::Unsupported { ref option, .. }) if option == "dimensions(64)"
     ));
-    let c = Client::new(Endpoint::gemini("k"), unused()).with_truncate(embedrs::Truncate::End);
-    assert!(matches!(c.prepare(["a"]), Err(Error::Unsupported { .. })));
 }
 
 #[test]
@@ -208,6 +206,28 @@ fn truncate_switches() {
     assert!(body(Endpoint::cohere("k"), Truncate::Error).ends_with(r#","truncate":"NONE"}"#));
     assert!(body(Endpoint::jina("k"), Truncate::End).ends_with(r#","truncate":true}"#));
     assert!(!body(Endpoint::openai("k"), Truncate::Error).contains("trunc"));
+    let gemini = |t: Truncate, texts: &[&str]| {
+        let p = Client::new(Endpoint::gemini("k"), unused())
+            .with_truncate(t)
+            .prepare(texts)
+            .unwrap();
+        String::from_utf8(p.request().body.clone()).unwrap()
+    };
+    assert!(
+        gemini(Truncate::End, &["a"]).ends_with(r#","embedContentConfig":{"autoTruncate":true}}"#)
+    );
+    assert!(
+        gemini(Truncate::Error, &["a"])
+            .ends_with(r#","embedContentConfig":{"autoTruncate":false}}"#)
+    );
+    assert!(!gemini(Truncate::Provider, &["a"]).contains("autoTruncate"));
+    // in a batch, every request carries the switch
+    let b = gemini(Truncate::End, &["a", "b"]);
+    assert_eq!(
+        b.matches(r#""embedContentConfig":{"autoTruncate":true}"#)
+            .count(),
+        2
+    );
     for ep in [Endpoint::openai("k"), Endpoint::mistral("k")] {
         let c = Client::new(ep, unused()).with_truncate(Truncate::End);
         assert!(matches!(c.prepare(["a"]), Err(Error::Unsupported { .. })));

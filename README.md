@@ -50,17 +50,17 @@ Everything here was measured on 2026-11-26 on an Apple M4 Pro Mac mini (14 cores
 | 256 texts, 180 words | 40 /s | **113 /s** | 23 /s | 0.15 M/s |
 | 256 texts, mixed | 62 /s | **213 /s** | 22 /s | 0.26 M/s |
 
-On Linux (Intel i7-10700K, 8 cores, x86_64 with AVX2, same build settings and texts, under the same kind of benchmark lock; load average at most 12.0) the matrix products run on embedrs' own AVX2/FMA kernels. With default threads embedrs is ahead of fastembed on every row; on one thread ONNX Runtime is still 4% faster on a single 180-word text, and embedrs is ahead on every other row.
+On Linux (Intel i7-10700K, 8 cores, x86_64 with AVX2, measured on 2026-11-27 with the same build settings and texts, under the same kind of benchmark lock; load average at most 11.3) the matrix products run on embedrs' own AVX2/FMA kernels. embedrs is ahead of fastembed on every row, with default threads and on one thread; the closest row is one 180-word text on one thread, 44.5 against 45.1 ms.
 
 | Intel i7-10700K, Linux | 0.6.2 | **embedrs** | fastembed | 0.6.2, one thread | **embedrs, one thread** | fastembed, one thread |
 |---|---|---|---|---|---|---|
-| one text, 8 words | 11.9 ms | **1.45 ms** | 1.98 ms | 9.94 ms | **3.65 ms** | 3.88 ms |
-| one text, 40 words | 22.1 ms | **2.99 ms** | 3.65 ms | 21.5 ms | **11.1 ms** | 11.2 ms |
-| one text, 180 words | 46.0 ms | **8.20 ms** | 10.3 ms | 85.3 ms | **46.6 ms** | 44.8 ms |
-| 256 texts, 8 words | 650 /s | **2,291 /s** | 1,149 /s | 223 /s | **393 /s** | 262 /s |
-| 256 texts, 40 words | 172 /s | **554 /s** | 286 /s | 53 /s | **93 /s** | 71 /s |
-| 256 texts, 180 words | 29 /s | **118 /s** | 60 /s | 9 /s | **19 /s** | 17 /s |
-| 256 texts, mixed | 46 /s | **215 /s** | 59 /s | 14 /s | **35 /s** | 17 /s |
+| one text, 8 words | 11.9 ms | **1.35 ms** | 1.93 ms | 9.94 ms | **3.55 ms** | 3.91 ms |
+| one text, 40 words | 22.1 ms | **2.84 ms** | 3.63 ms | 21.6 ms | **11.1 ms** | 11.8 ms |
+| one text, 180 words | 46.5 ms | **7.59 ms** | 10.4 ms | 84.5 ms | **44.5 ms** | 45.1 ms |
+| 256 texts, 8 words | 648 /s | **2,522 /s** | 1,121 /s | 223 /s | **420 /s** | 258 /s |
+| 256 texts, 40 words | 174 /s | **633 /s** | 294 /s | 53 /s | **98 /s** | 71 /s |
+| 256 texts, 180 words | 31 /s | **135 /s** | 61 /s | 9 /s | **21 /s** | 17 /s |
+| 256 texts, mixed | 45 /s | **245 /s** | 60 /s | 13 /s | **38 /s** | 17 /s |
 
 Peak memory (largest resident set) of a process that loads one model and embeds the 256 mixed texts: 201 MB for `all-MiniLM-L6-v2` (0.6.2: 1,715 MB), 234 to 286 MB for the 12-layer models (0.6.2: 687 to 1,878 MB). On the Linux machine: 184 MB for `all-MiniLM-L6-v2` (0.6.2: 1,009 MB), 218 to 265 MB for the 12-layer models (0.6.2: 572 to 1,147 MB). The word embeddings are read in place from the mapped weight file, the matrices are copied once into the layout the matrix products read fastest, and texts run without padding in chunks of about 4,096 tokens.
 
@@ -250,7 +250,7 @@ async fn run(client: &embedrs::Client, texts: &[String]) -> embedrs::Result<()> 
 }
 ```
 
-`Truncate::Provider` (the default) leaves long inputs to the provider: Voyage, Cohere, Gemini and the local models cut the end, OpenAI and Jina answer with an error. `Truncate::End` asks for cutting, `Truncate::Error` for refusing; a provider without such a switch returns `Error::Unsupported`. Local models refuse with `Error::InputTooLong` before running, and so do OpenAI models when `token-count` is on.
+`Truncate::Provider` (the default) leaves long inputs to the provider: Voyage, Cohere, Gemini and the local models cut the end, OpenAI and Jina answer with an error. `Truncate::End` asks for cutting, `Truncate::Error` for refusing (for Gemini, `embedContentConfig.autoTruncate` set to `true` or `false`); a provider without such a switch returns `Error::Unsupported`. Local models refuse with `Error::InputTooLong` before running, and so do OpenAI models when `token-count` is on.
 
 ## Retries, timeouts and fallback
 
