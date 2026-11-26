@@ -2,18 +2,12 @@
 //! `:batchEmbedContents` for several; the key goes in `x-goog-api-key`.
 
 use super::{Call, Parsed, push_vector, writer};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::input::{InputType, Truncate};
 use crate::json::read::{Cursor, R};
 use crate::json::write::Writer;
 
 pub(super) fn body(call: &Call<'_>) -> Result<(String, Vec<u8>)> {
-    if call.truncate != Truncate::Provider {
-        return Err(Error::unsupported(
-            call.model,
-            format!("truncate({:?})", call.truncate),
-        ));
-    }
     let model = call.model;
     let mut w = writer(call);
     if call.inputs.len() == 1 {
@@ -54,6 +48,11 @@ fn request(w: &mut Writer, call: &Call<'_>, text: &str) {
     if let Some(d) = call.dimensions {
         w.raw(",\"outputDimensionality\":");
         w.uint(d as u64);
+    }
+    match call.truncate {
+        Truncate::End => w.raw(",\"embedContentConfig\":{\"autoTruncate\":true}"),
+        Truncate::Error => w.raw(",\"embedContentConfig\":{\"autoTruncate\":false}"),
+        Truncate::Provider => {}
     }
     w.raw("}");
 }

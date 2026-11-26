@@ -250,7 +250,7 @@ async fn run(client: &embedrs::Client, texts: &[String]) -> embedrs::Result<()> 
 }
 ```
 
-`Truncate::Provider` (the default) leaves long inputs to the provider: Voyage, Cohere, Gemini and the local models cut the end, OpenAI and Jina answer with an error. `Truncate::End` asks for cutting, `Truncate::Error` for refusing; a provider without such a switch returns `Error::Unsupported`. Local models refuse with `Error::InputTooLong` before running, and so do OpenAI models when `token-count` is on.
+`Truncate::Provider` (the default) leaves long inputs to the provider: Voyage, Cohere, Gemini and the local models cut the end, OpenAI and Jina answer with an error. `Truncate::End` asks for cutting, `Truncate::Error` for refusing (for Gemini, `embedContentConfig.autoTruncate` set to `true` or `false`); a provider without such a switch returns `Error::Unsupported`. Local models refuse with `Error::InputTooLong` before running, and so do OpenAI models when `token-count` is on.
 
 ## Retries, timeouts and fallback
 

@@ -250,7 +250,7 @@ async fn run(client: &embedrs::Client, texts: &[String]) -> embedrs::Result<()> 
 }
 ```
 
-既定の `Truncate::Provider` では、長い入力の扱いはプロバイダーに任せます。Voyage、Cohere、Gemini、ローカルモデルは末尾を切り詰め、OpenAI と Jina はエラーを返します。`Truncate::End` は切り詰めを、`Truncate::Error` は拒否を指定します。プロバイダーにその指定がない場合は `Error::Unsupported` になります。ローカルモデルは計算の前に `Error::InputTooLong` を返し、`token-count` を有効にしていれば OpenAI のモデルも送信前に同じエラーを返します。
+既定の `Truncate::Provider` では、長い入力の扱いはプロバイダーに任せます。Voyage、Cohere、Gemini、ローカルモデルは末尾を切り詰め、OpenAI と Jina はエラーを返します。`Truncate::End` は切り詰めを、`Truncate::Error` は拒否を指定します（Gemini では `embedContentConfig.autoTruncate` を `true` または `false` にして送ります）。プロバイダーにその指定がない場合は `Error::Unsupported` になります。ローカルモデルは計算の前に `Error::InputTooLong` を返し、`token-count` を有効にしていれば OpenAI のモデルも送信前に同じエラーを返します。
 
 ## リトライ、タイムアウト、フォールバック
 

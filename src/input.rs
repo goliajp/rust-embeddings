@@ -23,12 +23,13 @@ pub enum Truncate {
     #[default]
     Provider,
     /// Cut the end. Sent as Voyage `truncation: true`, Cohere
-    /// `truncate: "END"`, Jina `truncate: true`; what local models do.
+    /// `truncate: "END"`, Jina `truncate: true`, Gemini
+    /// `embedContentConfig.autoTruncate: true`; what local models do.
     /// [`Error::Unsupported`](crate::Error::Unsupported) for providers
     /// without such a switch.
     End,
     /// Refuse long inputs. Sent as Voyage `truncation: false`, Cohere
-    /// `truncate: "NONE"`; OpenAI and Jina refuse by default; local models,
+    /// `truncate: "NONE"`, Gemini `embedContentConfig.autoTruncate: false`; OpenAI and Jina refuse by default; local models,
     /// and OpenAI models with the `token-count` feature, return
     /// [`Error::InputTooLong`](crate::Error::InputTooLong) before
     /// running. [`Error::Unsupported`](crate::Error::Unsupported) for

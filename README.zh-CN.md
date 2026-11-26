@@ -250,7 +250,7 @@ async fn run(client: &embedrs::Client, texts: &[String]) -> embedrs::Result<()> 
 }
 ```
 
-默认的 `Truncate::Provider` 由服务商决定：Voyage、Cohere、Gemini 和本地模型会截掉末尾，OpenAI 和 Jina 会返回错误。`Truncate::End` 要求截断，`Truncate::Error` 要求拒绝；服务商没有这种开关时返回 `Error::Unsupported`。本地模型在计算前就以 `Error::InputTooLong` 拒绝，OpenAI 模型在开启 `token-count` 时也是如此。
+默认的 `Truncate::Provider` 由服务商决定：Voyage、Cohere、Gemini 和本地模型会截掉末尾，OpenAI 和 Jina 会返回错误。`Truncate::End` 要求截断，`Truncate::Error` 要求拒绝（Gemini 对应把 `embedContentConfig.autoTruncate` 设为 `true` 或 `false`）；服务商没有这种开关时返回 `Error::Unsupported`。本地模型在计算前就以 `Error::InputTooLong` 拒绝，OpenAI 模型在开启 `token-count` 时也是如此。
 
 ## 重试、超时和备用服务
 
