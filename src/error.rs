@@ -50,6 +50,12 @@ pub enum Error {
         max: u32,
     },
 
+    /// An empty string, for an endpoint whose API refuses one (OpenAI, Azure OpenAI).
+    EmptyInput {
+        /// Position of the input.
+        index: usize,
+    },
+
     /// A request option the model or provider cannot honour.
     Unsupported {
         /// The model the request was for.
@@ -122,6 +128,12 @@ impl fmt::Display for Error {
                 f,
                 "input {index} is {tokens} tokens; the model reads at most {max}"
             ),
+            Error::EmptyInput { index } => {
+                write!(
+                    f,
+                    "input {index} is empty; the endpoint refuses empty strings"
+                )
+            }
             Error::Unsupported { model, option } => {
                 write!(f, "{model} does not support {option}")
             }

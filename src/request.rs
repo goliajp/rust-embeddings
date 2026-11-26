@@ -180,6 +180,11 @@ fn check(ep: &Endpoint, p: &Plan, inputs: &Inputs<'_>) -> Result<()> {
     if count > max {
         return Err(Error::TooManyInputs { count, max });
     }
+    if ep.refuses_empty_input()
+        && let Some(index) = inputs.iter().position(str::is_empty)
+    {
+        return Err(Error::EmptyInput { index });
+    }
     #[cfg(feature = "token-count")]
     if p.truncate == Truncate::Error
         && let Some(max) = ep.limits.max_input_tokens
@@ -480,6 +485,25 @@ pub(crate) mod tests {
         let e = block_on(c.embed(&texts).into_future()).unwrap_err();
         assert!(matches!(e, Error::TooManyInputs { count: 97, max: 96 }));
         assert!(t.sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_openai_inputs_are_refused_before_sending() {
+        let t = fake_full(vec![]);
+        let c =
+            Client::new(Endpoint::openai("k"), t.clone()).with_timeout(Duration::from_secs(1000));
+        let e = block_on(c.embed(["a", ""]).into_future()).unwrap_err();
+        assert!(matches!(e, Error::EmptyInput { index: 1 }));
+        assert!(t.sent.lock().unwrap().is_empty());
+        // the first chunk goes out; the one holding the empty text does not
+        let two = r#"{"data":[{"embedding":[1]},{"embedding":[2]}]}"#;
+        let t2 = fake_full(vec![ok(two)]);
+        let c = c.with_transport(t2.clone());
+        let e = block_on(c.embed_batch(["a", "b", ""]).chunk_size(2).into_future());
+        assert!(matches!(e, Err(Error::EmptyInput { index: 2 })));
+        assert_eq!(t2.sent.lock().unwrap().len(), 1);
+        let local = Client::new(Endpoint::openai_compatible("k", "http://x/v1"), t.clone());
+        assert!(local.prepare([""]).is_ok());
     }
 
     #[cfg(feature = "token-count")]
