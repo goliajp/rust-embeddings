@@ -178,8 +178,17 @@ impl Pool {
             }
         }
         f(0);
+        // a worker that lost its core holds the last items; past the spin
+        // budget, give the core back instead of competing with it
+        let start = Instant::now();
+        let mut spins = 0u32;
         while self.done.load(Acquire) != self.threads - 1 {
-            std::hint::spin_loop();
+            spins = spins.wrapping_add(1);
+            if spins % 64 != 0 || start.elapsed() < SPIN {
+                std::hint::spin_loop();
+            } else {
+                std::thread::yield_now();
+            }
         }
         assert!(!self.panicked.load(Acquire), "a worker thread panicked");
     }
