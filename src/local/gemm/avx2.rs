@@ -27,7 +27,7 @@ unsafe fn kernel<const R: usize>(
             row[0] = _mm256_loadu_ps(c.add(r * ldc));
             row[1] = _mm256_loadu_ps(c.add(r * ldc + 8));
         }
-        for k in 0..kc {
+        let mut step = |k: usize| {
             let bp = b.add(k * NR);
             // the packed data is read front to back; fetching ahead keeps the
             // weights streaming when they come from memory, not cache. The
@@ -39,6 +39,20 @@ unsafe fn kernel<const R: usize>(
                 row[0] = _mm256_fmadd_ps(x, b0, row[0]);
                 row[1] = _mm256_fmadd_ps(x, b1, row[1]);
             }
+        };
+        // four steps per trip: one step alone is as many instructions as the
+        // core issues while its multiply-adds run, so loop overhead showed
+        let mut k = 0;
+        while k + 4 <= kc {
+            step(k);
+            step(k + 1);
+            step(k + 2);
+            step(k + 3);
+            k += 4;
+        }
+        while k < kc {
+            step(k);
+            k += 1;
         }
         for (r, row) in acc.iter().enumerate() {
             _mm256_storeu_ps(c.add(r * ldc), row[0]);
