@@ -30,151 +30,10 @@ pub(crate) fn gelu(x: f32) -> f32 {
     0.5 * x * (1.0 + erf(x * std::f32::consts::FRAC_1_SQRT_2))
 }
 
-/// e^x for x <= 88.7 (Cephes' single-precision form); max relative error 1e-7.
-#[inline(always)]
-pub(crate) fn exp(x: f32) -> f32 {
-    let x = x.clamp(-87.3, 88.7);
-    let n = (x * std::f32::consts::LOG2_E + 0.5).floor();
-    let r = n.mul_add(-0.693_359_4, x);
-    let r = n.mul_add(2.121_944_4e-4, r);
-    let mut p = 1.987_569_1e-4_f32;
-    p = p.mul_add(r, 1.398_199_9e-3);
-    p = p.mul_add(r, 8.333_452e-3);
-    p = p.mul_add(r, 4.166_579_6e-2);
-    p = p.mul_add(r, 1.666_666_6e-1);
-    p = p.mul_add(r, 0.5);
-    let y = (p * r).mul_add(r, r) + 1.0;
-    // safety: n is in [-126, 128] after the clamp
-    y * f32::from_bits(((unsafe { n.to_int_unchecked::<i32>() } + 127) << 23) as u32)
-}
-
 #[inline(always)]
 fn gelu_body(x: &mut [f32]) {
     for v in x {
         *v = gelu(*v);
-    }
-}
-
-// v = e^(v - max) over a slice. The compiler leaves `exp` scalar in a
-// loop, so the vector versions spell out the same operations in the same
-// order, and give the same bits
-fn exp_minus(x: &mut [f32], max: f32) {
-    #[cfg(target_arch = "x86_64")]
-    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-        // safety: the features were just detected
-        return unsafe { exp_minus_avx2(x, max) };
-    }
-    #[cfg(target_arch = "aarch64")]
-    return exp_minus_neon(x, max);
-    #[allow(unreachable_code)]
-    for v in x.iter_mut() {
-        *v = exp(*v - max);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-fn exp_minus_avx2(x: &mut [f32], max: f32) {
-    use std::arch::x86_64::*;
-    let (chunks, rest) = x.as_chunks_mut::<8>();
-    let k = _mm256_set1_ps;
-    let m = k(max);
-    for c in chunks {
-        // safety: c is 8 values
-        let v = _mm256_sub_ps(unsafe { _mm256_loadu_ps(c.as_ptr()) }, m);
-        let v = _mm256_min_ps(_mm256_max_ps(v, k(-87.3)), k(88.7));
-        let n = _mm256_floor_ps(_mm256_add_ps(
-            _mm256_mul_ps(v, k(std::f32::consts::LOG2_E)),
-            k(0.5),
-        ));
-        let r = _mm256_fmadd_ps(n, k(-0.693_359_4), v);
-        let r = _mm256_fmadd_ps(n, k(2.121_944_4e-4), r);
-        let mut p = k(1.987_569_1e-4);
-        for c in [
-            1.398_199_9e-3,
-            8.333_452e-3,
-            4.166_579_6e-2,
-            1.666_666_6e-1,
-            0.5,
-        ] {
-            p = _mm256_fmadd_ps(p, r, k(c));
-        }
-        let y = _mm256_add_ps(_mm256_fmadd_ps(_mm256_mul_ps(p, r), r, r), k(1.0));
-        let e = _mm256_slli_epi32::<23>(_mm256_add_epi32(
-            _mm256_cvttps_epi32(n),
-            _mm256_set1_epi32(127),
-        ));
-        // safety: c is 8 values
-        unsafe { _mm256_storeu_ps(c.as_mut_ptr(), _mm256_mul_ps(y, _mm256_castsi256_ps(e))) };
-    }
-    for v in rest {
-        *v = exp(*v - max);
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-fn exp_minus_neon(x: &mut [f32], max: f32) {
-    use std::arch::aarch64::*;
-    let (chunks, rest) = x.as_chunks_mut::<4>();
-    // safety (whole loop): NEON is part of aarch64, and c is 4 values
-    unsafe {
-        let k = vdupq_n_f32;
-        let m = k(max);
-        for c in chunks {
-            let v = vsubq_f32(vld1q_f32(c.as_ptr()), m);
-            let v = vminq_f32(vmaxq_f32(v, k(-87.3)), k(88.7));
-            let n = vrndmq_f32(vaddq_f32(vmulq_f32(v, k(std::f32::consts::LOG2_E)), k(0.5)));
-            let r = vfmaq_f32(v, n, k(-0.693_359_4));
-            let r = vfmaq_f32(r, n, k(2.121_944_4e-4));
-            let mut p = k(1.987_569_1e-4);
-            for c in [
-                1.398_199_9e-3,
-                8.333_452e-3,
-                4.166_579_6e-2,
-                1.666_666_6e-1,
-                0.5,
-            ] {
-                p = vfmaq_f32(k(c), p, r);
-            }
-            let y = vaddq_f32(vfmaq_f32(r, vmulq_f32(p, r), r), k(1.0));
-            let e = vshlq_n_s32::<23>(vaddq_s32(vcvtq_s32_f32(n), vdupq_n_s32(127)));
-            vst1q_f32(c.as_mut_ptr(), vmulq_f32(y, vreinterpretq_f32_s32(e)));
-        }
-    }
-    for v in rest {
-        *v = exp(*v - max);
-    }
-}
-
-/// Each row of `x` (row length `n`) becomes e^(v - max of the row); the
-/// row's 1 / sum goes to `inv`. The caller scales whatever it computes from
-/// a row instead of the row itself, which saves a pass over it.
-#[inline(always)]
-fn softmax_rows_body(x: &mut [f32], n: usize, inv: &mut [f32]) {
-    for (row, inv) in x.chunks_exact_mut(n).zip(inv.iter_mut()) {
-        let (chunks, rest) = row.as_chunks::<8>();
-        let mut m = [f32::NEG_INFINITY; 8];
-        for c in chunks {
-            for i in 0..8 {
-                m[i] = if c[i] > m[i] { c[i] } else { m[i] };
-            }
-        }
-        let mut max = rest
-            .iter()
-            .fold(f32::NEG_INFINITY, |a, &v| if v > a { v } else { a });
-        for v in m {
-            max = if v > max { v } else { max };
-        }
-        exp_minus(row, max);
-        let mut s = [0f32; 8];
-        let (chunks, rest) = row.as_chunks::<8>();
-        for c in chunks {
-            for i in 0..8 {
-                s[i] += c[i];
-            }
-        }
-        let sum: f32 = rest.iter().sum();
-        *inv = 1.0 / (sum + s.iter().sum::<f32>());
     }
 }
 
@@ -246,7 +105,6 @@ macro_rules! dispatch {
 }
 
 dispatch!(gelu_slice, gelu_body, gelu_avx2, (x: &mut [f32]));
-dispatch!(softmax_rows, softmax_rows_body, softmax_rows_avx2, (x: &mut [f32], n: usize, inv: &mut [f32]));
 dispatch!(layernorm, layernorm_body, layernorm_avx2, (x: &mut [f32], w: &[f32], b: &[f32], eps: f32));
 dispatch!(add_layernorm, add_layernorm_body, add_layernorm_avx2, (x: &mut [f32], residual: &[f32], w: &[f32], b: &[f32], eps: f32));
 
@@ -276,6 +134,7 @@ pub(crate) fn rows(par: Par, x: &mut [f32], width: usize, f: &(dyn Fn(&mut [f32]
 }
 
 /// Every row of `c` (m, n) set to `bias`.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn prefill(par: Par, c: &mut [f32], bias: &[f32]) {
     let n = bias.len();
     rows(par, c, n, &|block, _| {

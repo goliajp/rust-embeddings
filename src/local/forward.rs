@@ -93,8 +93,7 @@ pub(crate) fn forward(
 
     let last = w.layers.len().saturating_sub(1);
     for (li, l) in w.layers.iter().enumerate() {
-        ops::prefill(par, &mut b.qkv, &l.qkv.b);
-        linear(&b.x, t, &l.qkv.w, &mut b.qkv, par);
+        linear(&b.x, t, &l.qkv.w, &l.qkv.b, &mut b.qkv, par);
         // with [CLS] pooling, the last layer's output is read at the first
         // token only: every token still gives keys and values, but the
         // rest of the layer runs on one row per sequence
@@ -105,7 +104,6 @@ pub(crate) fn forward(
             (t, Queries::All)
         };
         let ctx = &mut b.ctx[..rows * h];
-        ops::rows(par, ctx, h, &|block, _| block.fill(0.0));
         attention::attention(&b.qkv, &b.seqs, h, c.heads, queries, ctx, par, &b.scratch);
         if cls {
             b.xc.clear();
@@ -118,20 +116,17 @@ pub(crate) fn forward(
         // the residual is added after the product, not preloaded into it: (x·W + b) + r
         // stays closer to an f64 pass
         let a = &mut b.a[..rows * h];
-        ops::prefill(par, a, &l.out.b);
-        linear(&b.ctx[..rows * h], rows, &l.out.w, a, par);
+        linear(&b.ctx[..rows * h], rows, &l.out.w, &l.out.b, a, par);
         ops::rows(par, a, h, &|block, r0| {
             ops::add_layernorm(block, &residual[r0 * h..], &l.norm1.w, &l.norm1.b, eps)
         });
 
         let ff = &mut b.f[..rows * f];
-        ops::prefill(par, ff, &l.ff_in.b);
-        linear(&b.a[..rows * h], rows, &l.ff_in.w, ff, par);
+        linear(&b.a[..rows * h], rows, &l.ff_in.w, &l.ff_in.b, ff, par);
         ops::rows(par, ff, f, &|block, _| ops::gelu_slice(block));
 
         let x = &mut b.x[..rows * h];
-        ops::prefill(par, x, &l.ff_out.b);
-        linear(&b.f[..rows * f], rows, &l.ff_out.w, x, par);
+        linear(&b.f[..rows * f], rows, &l.ff_out.w, &l.ff_out.b, x, par);
         let a = &b.a;
         ops::rows(par, x, h, &|block, r0| {
             ops::add_layernorm(block, &a[r0 * h..], &l.norm2.w, &l.norm2.b, eps)

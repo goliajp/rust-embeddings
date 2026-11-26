@@ -6,23 +6,38 @@ pub(super) const MR: usize = 8;
 pub(super) const NR: usize = 12;
 pub(super) const KC: usize = 512;
 
-/// C[0..R][0..12] += A[0..R][0..kc] · B panel; `a` holds R row pointers (R <= MR).
+/// C[0..R][0..12] += A[0..R][0..kc] · B panel, or = (bias +) as S says; `a` holds R row pointers (R <= MR).
 #[inline(always)]
-unsafe fn kernel<const R: usize>(
+unsafe fn kernel<const R: usize, const S: u8>(
     kc: usize,
     a: &[*const f32; 8],
     b: *const f32,
     c: *mut f32,
     ldc: usize,
+    bias: *const f32,
 ) {
     // safety: the tile loop passes kc readable values per row pointer, a
-    // panel of kc x 12 values at b, and R rows of 12 writable values at c
+    // panel of kc x 12 values at b, R rows of 12 writable values at c, and
+    // 12 values at bias when S is BIAS
     unsafe {
         let mut acc = [[vdupq_n_f32(0.0); 3]; R];
-        for (r, row) in acc.iter_mut().enumerate() {
-            for (j, v) in row.iter_mut().enumerate() {
-                *v = vld1q_f32(c.add(r * ldc + 4 * j));
+        match S {
+            super::ADD => {
+                for (r, row) in acc.iter_mut().enumerate() {
+                    for (j, v) in row.iter_mut().enumerate() {
+                        *v = vld1q_f32(c.add(r * ldc + 4 * j));
+                    }
+                }
             }
+            super::BIAS => {
+                let v = [
+                    vld1q_f32(bias),
+                    vld1q_f32(bias.add(4)),
+                    vld1q_f32(bias.add(8)),
+                ];
+                acc.iter_mut().for_each(|row| *row = v);
+            }
+            _ => {}
         }
         for k in 0..kc {
             let bp = b.add(k * NR);
@@ -42,4 +57,4 @@ unsafe fn kernel<const R: usize>(
     }
 }
 
-super::tile_loop!(kernel, MR, NR, KC, 128);
+super::tile::tile_loop!(kernel, MR, NR, KC, 128);
