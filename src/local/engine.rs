@@ -1,59 +1,42 @@
-//! A loaded model: tokenize, run texts in groups of similar length, pool,
+//! A loaded model: tokenize, run texts in chunks of similar length, pool,
 //! normalise.
 
 use std::path::Path;
+use std::sync::Mutex;
 
-use candle_core::{DType, Device, Tensor};
-use candle_nn::VarBuilder;
-
-use super::bert::Bert;
-use super::fail;
-use super::model::{ModelInfo, Pooling};
+use super::forward::{Buffers, forward};
+use super::model::ModelInfo;
+use super::pool;
+use super::weights::Weights;
 use super::wordpiece;
 use crate::error::{Error, Result};
 
-// texts are sorted by token count and run in groups of this many, so each
-// group is padded only to its own longest text
-const GROUP: usize = 64;
+// texts are sorted by token count and run in chunks of about this many
+// tokens; a chunk has no padding, so its size only trades matrix-product
+// efficiency against activation memory
+const CHUNK_TOKENS: usize = 4096;
 
-// up to this many positions (texts x padded length) the softmax and
-// layer-norm kernels are faster on one thread than handed to rayon's pool:
-// measured with accelerate on an m4 pro, where the matrix products do not
-// use rayon; elsewhere they do, and one thread would slow them down
+// below this many tokens in a call, one thread does all of it: on macOS the
+// matrix products run in Accelerate either way and the rest is too small
+// to pay for starting threads
 #[cfg(target_os = "macos")]
-const SERIAL_POSITIONS: usize = 224;
+const POOL_MIN_TOKENS: usize = 48;
+#[cfg(not(target_os = "macos"))]
+const POOL_MIN_TOKENS: usize = 1;
 
 pub(crate) struct Engine {
-    model: Bert,
+    weights: Weights,
     info: &'static ModelInfo,
-    #[cfg(target_os = "macos")]
-    serial: rayon::ThreadPool,
-}
-
-fn tensor_err(what: &'static str) -> impl Fn(candle_core::Error) -> Error {
-    move |e| fail(format!("{what}: {e}"))
+    buffers: Mutex<Buffers>,
 }
 
 impl Engine {
-    /// Map the weights file and build the model.
+    /// Map the weights file and lay out the model.
     pub(crate) fn load(info: &'static ModelInfo, weights: &Path) -> Result<Self> {
-        let device = Device::Cpu;
-        // safety: the file is a read-only blob in the model cache (or a file
-        // the caller handed over); it is not modified while mapped
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights], DType::F32, &device) }
-            .map_err(tensor_err("cannot load the weights"))?;
-        let model = Bert::load(vb, &info.shape()).map_err(tensor_err("cannot build the model"))?;
-        #[cfg(target_os = "macos")]
-        let serial = rayon::ThreadPoolBuilder::new()
-            .num_threads(1)
-            .thread_name(move |_| format!("embedrs-{}-short", info.name))
-            .build()
-            .map_err(|e| fail(format!("cannot start the short-text thread: {e}")))?;
         Ok(Self {
-            model,
+            weights: Weights::load(weights, &info.shape())?,
             info,
-            #[cfg(target_os = "macos")]
-            serial,
+            buffers: Mutex::new(Buffers::new()),
         })
     }
 
@@ -97,8 +80,7 @@ impl Engine {
         Ok(all)
     }
 
-    /// The vectors, row-major in input order, and the tokens the model read
-    /// (padding excluded).
+    /// The vectors, row-major in input order, and the tokens the model read.
     pub(crate) fn encode(
         &self,
         texts: &[String],
@@ -106,71 +88,46 @@ impl Engine {
         refuse_long: bool,
     ) -> Result<(Vec<f32>, u64)> {
         let ids = self.tokenize(texts, prefix, refuse_long)?;
-        let total = ids.iter().map(|v| v.len() as u64).sum();
+        let total: usize = ids.iter().map(Vec::len).sum();
         let mut order: Vec<usize> = (0..ids.len()).collect();
         order.sort_by_key(|&i| ids[i].len());
         let dim = self.info.dim;
         let mut out = vec![0f32; ids.len() * dim];
-        for group in order.chunks(GROUP) {
-            let batch: Vec<&[u32]> = group.iter().map(|&i| ids[i].as_slice()).collect();
-            let rows = self.run(&batch)?;
-            for (k, &i) in group.iter().enumerate() {
-                out[i * dim..(i + 1) * dim].copy_from_slice(&rows[k * dim..(k + 1) * dim]);
+        let mut chunks = Vec::new();
+        let (mut start, mut tokens) = (0, 0);
+        for (k, &i) in order.iter().enumerate() {
+            if tokens > 0 && tokens + ids[i].len() > CHUNK_TOKENS {
+                chunks.push(start..k);
+                (start, tokens) = (k, 0);
             }
+            tokens += ids[i].len();
         }
-        Ok((out, total))
-    }
-
-    fn run(&self, batch: &[&[u32]]) -> Result<Vec<f32>> {
-        #[cfg(target_os = "macos")]
-        {
-            let longest = batch.iter().map(|e| e.len()).max().unwrap_or(0);
-            if batch.len() * longest <= SERIAL_POSITIONS {
-                return self.serial.install(|| self.forward(batch));
+        chunks.push(start..order.len());
+        let threads = if total >= POOL_MIN_TOKENS {
+            pool::threads()
+        } else {
+            1
+        };
+        let mut buffers = self.buffers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut rows = Vec::new();
+        pool::scoped(threads, |par| {
+            for chunk in chunks {
+                let group = &order[chunk];
+                let batch: Vec<&[u32]> = group.iter().map(|&i| ids[i].as_slice()).collect();
+                rows.resize(group.len() * dim, 0.0);
+                forward(
+                    &self.weights,
+                    &batch,
+                    self.info.pooling,
+                    &mut rows,
+                    &mut buffers,
+                    par,
+                );
+                for (k, &i) in group.iter().enumerate() {
+                    out[i * dim..(i + 1) * dim].copy_from_slice(&rows[k * dim..(k + 1) * dim]);
+                }
             }
-        }
-        self.forward(batch)
+        });
+        Ok((out, total as u64))
     }
-
-    fn forward(&self, batch: &[&[u32]]) -> Result<Vec<f32>> {
-        let device = Device::Cpu;
-        let len = batch.iter().map(|e| e.len()).max().unwrap_or(0);
-        let mut ids = vec![0u32; batch.len() * len];
-        let mut mask = vec![0u32; batch.len() * len];
-        for (k, e) in batch.iter().enumerate() {
-            ids[k * len..k * len + e.len()].copy_from_slice(e);
-            mask[k * len..k * len + e.len()].fill(1);
-        }
-        let padded = batch.iter().any(|e| e.len() < len);
-        let shape = (batch.len(), len);
-        let ids =
-            Tensor::from_vec(ids, shape, &device).map_err(tensor_err("tensor creation failed"))?;
-        let mask =
-            Tensor::from_vec(mask, shape, &device).map_err(tensor_err("tensor creation failed"))?;
-        let states = self
-            .model
-            .forward(&ids, padded.then_some(&mask))
-            .map_err(tensor_err("forward pass failed"))?;
-        let pooled = match self.info.pooling {
-            Pooling::Mean => mean_pool(&states, &mask),
-            Pooling::Cls => states.narrow(1, 0, 1).and_then(|t| t.squeeze(1)),
-        }
-        .map_err(tensor_err("pooling failed"))?;
-        l2_normalize(&pooled)
-            .and_then(|t| t.flatten_all())
-            .and_then(|t| t.to_vec1::<f32>())
-            .map_err(tensor_err("normalization failed"))
-    }
-}
-
-fn mean_pool(states: &Tensor, mask: &Tensor) -> candle_core::Result<Tensor> {
-    let mask = mask.to_dtype(DType::F32)?.unsqueeze(2)?;
-    let summed = states.broadcast_mul(&mask)?.sum(1)?;
-    let counts = mask.sum(1)?;
-    summed.broadcast_div(&counts)
-}
-
-fn l2_normalize(t: &Tensor) -> candle_core::Result<Tensor> {
-    let norms = t.sqr()?.sum_keepdim(1)?.sqrt()?;
-    t.broadcast_div(&norms)
 }

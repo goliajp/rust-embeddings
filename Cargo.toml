@@ -20,15 +20,6 @@ tokio = { version = "1", optional = true, features = ["time"] }
 tracing = { version = "0.1", optional = true }
 # pricing tables only; no vocabulary is compiled in (tests/cost_tracking.rs checks)
 tiktoken = { version = "5.5", optional = true, default-features = false }
-candle-core = { version = "0.11", optional = true }
-candle-nn = { version = "0.11", optional = true }
-
-# apple's accelerate framework ships with macos, so the local backend uses it there
-[target.'cfg(target_os = "macos")'.dependencies]
-candle-core = { version = "0.11", optional = true, features = ["accelerate"] }
-candle-nn = { version = "0.11", optional = true, features = ["accelerate"] }
-# already in candle's graph; runs short texts on one thread
-rayon = { version = "1", optional = true }
 
 [features]
 default = ["reqwest"]
@@ -36,7 +27,7 @@ reqwest = ["dep:reqwest", "dep:rustls", "dep:tokio"]
 tracing = ["dep:tracing"]
 cost-tracking = ["dep:tiktoken"]
 token-count = ["dep:tiktoken", "tiktoken/vocab-cl100k_base"]
-local = ["dep:candle-core", "dep:candle-nn", "dep:rayon"]
+local = []
 
 [[example]]
 name = "basic"
@@ -70,8 +61,6 @@ proptest = "1"
 zstd = "0.14"
 # reference for the wordpiece tests
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
-# reference forward pass for the local model test
-candle-transformers = "0.11"
 
 [profile.release]
 lto = true

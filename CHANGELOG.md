@@ -80,7 +80,8 @@ Behaviour that changes without a compile error:
 
 The requests themselves do not change: for every provider, model kind, input
 type and dimension setting that 0.6.2 was recorded with (510 cases), 0.7 sends
-the same bytes. Vectors of local models do not change either.
+the same bytes. Vectors of local models differ from 0.6.2 by at most 3.3e-7 in
+any component (38 texts, all four models; cosine 1 − 2e-12 or closer).
 
 ### Added
 
@@ -110,11 +111,20 @@ the same bytes. Vectors of local models do not change either.
   `futures` are gone. Distinct crates on macOS, this one included: 84 by
   default (101 in 0.6.2), 1 with `default-features = false`, 201 with `local`
   (255 in 0.6.2).
-- `local` no longer uses `hf-hub`, `ruzstd` or `candle-transformers`, and links
-  neither onig (C) nor OpenSSL. `candle-core` itself still depends on
-  `tokenizers`, which embedrs does not call.
+- `local` has no dependencies: the forward pass, the safetensors reader, the
+  WordPiece tokenizer and the download code are in the crate. candle, `hf-hub`,
+  `tokenizers` and rayon are gone, and nothing links onig (C) or OpenSSL. On
+  macOS the matrix products go to the Accelerate framework that ships with the
+  OS; elsewhere they run on in-crate AVX2/FMA (x86_64) or NEON (aarch64)
+  kernels, with a portable fallback.
 - Local inference runs on one worker thread per model instead of tokio's
-  blocking pool, so it needs no runtime.
+  blocking pool, so it needs no runtime. A call with enough tokens adds
+  threads for the length of the call: the performance cores on macOS, all
+  available cores elsewhere, or `EMBEDRS_THREADS`.
+- Local texts are no longer padded: each call's texts run unpadded in chunks
+  of about 4096 tokens.
+- F32 weight files are mapped and read in place; F16 and BF16 files are
+  widened to f32 when loaded.
 - All vectors of a result share one buffer.
 
 ### Performance
