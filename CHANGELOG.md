@@ -64,6 +64,17 @@ Behaviour that changes without a compile error:
   `SearchQuery` and `SearchDocument` on `jina-clip-v2`, and any input type on
   the `jina-code-embeddings` models. A `SearchDocument` request to
   `jina-clip-v2` goes without a `task`. 0.6 sent these and got a 4xx back.
+  The `jina-embeddings-v2` and `jina-clip-v1` models get no `task` at all,
+  since their request schemas have none.
+- **Empty strings are refused before sending** to OpenAI and Azure OpenAI
+  (`Error::EmptyInput`), whose APIs do not accept them. Other
+  OpenAI-compatible servers still get them.
+- **Retries also follow OpenAI's `x-ratelimit-reset-requests` and
+  `x-ratelimit-reset-tokens`** (the later of the two) and the `retryDelay` of
+  a Gemini error when there is no `Retry-After`. Every server hint, including
+  `Retry-After`, is now capped by the backoff's `max`.
+- Token counts written with a zero fraction (`2.0`) are read; other
+  fractions are a decode error.
 
 The requests themselves do not change: for every provider, model kind, input
 type and dimension setting that 0.6.2 was recorded with (510 cases), 0.7 sends

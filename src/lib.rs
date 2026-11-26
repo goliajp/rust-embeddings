@@ -34,8 +34,8 @@
 //! - [`Error::Transport`]: no HTTP answer (connect, TLS, I/O)
 //! - [`Error::Timeout`]: the call exceeded the configured timeout
 //! - [`Error::Decode`]: a 2xx body that is not what the provider documents
-//! - [`Error::TooManyInputs`], [`Error::InputTooLong`], [`Error::Unsupported`]:
-//!   refused before sending
+//! - [`Error::TooManyInputs`], [`Error::InputTooLong`], [`Error::EmptyInput`],
+//!   [`Error::Unsupported`]: refused before sending
 //!
 //! ## Similarity
 //!

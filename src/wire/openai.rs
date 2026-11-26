@@ -100,6 +100,10 @@ fn jina_task(model: &str, input_type: Option<InputType>) -> Result<Option<&'stat
         return Ok(None);
     };
     let refuse = || Err(Error::unsupported(model, format!("input_type({it:?})")));
+    if model.starts_with("jina-embeddings-v2") || model.starts_with("jina-clip-v1") {
+        // their request schemas have no `task`
+        return Ok(None);
+    }
     if model.starts_with("jina-code-embeddings") {
         // its tasks are nl2code, qa, code2code and so on, none of the input types
         return refuse();
@@ -209,7 +213,7 @@ pub(super) fn parse(body: &[u8], n: usize) -> R<Parsed> {
             c.object(|c, key| match key {
                 "total_tokens" => {
                     if !c.null()? {
-                        p.total_tokens = Some(c.u64()?);
+                        p.total_tokens = Some(c.count()?);
                     }
                     Ok(())
                 }
@@ -276,6 +280,9 @@ mod tests {
         assert_eq!(raw.dim, 2);
         assert_eq!(raw.total_tokens, Some(4));
         assert_eq!(raw.model.as_deref(), Some("x"));
+        let raw =
+            p(r#"{"data":[{"embedding":[1]},{"embedding":[2]}],"usage":{"total_tokens":4.0}}"#);
+        assert_eq!(raw.unwrap().total_tokens, Some(4));
     }
 
     #[test]
@@ -322,6 +329,7 @@ mod tests {
             r#"{"data":[{"embedding":[1]}]} x"#,
             r#"{"model":"m"}"#,
             r#"{"data":[{"embedding":[1]}],"usage":{"total_tokens":-1}}"#,
+            r#"{"data":[{"embedding":[1]}],"usage":{"total_tokens":1.5}}"#,
         ] {
             assert!(p(bad).is_err(), "{bad}");
         }
@@ -353,6 +361,8 @@ mod tests {
         assert_eq!(t("jina-clip-v2", Clustering), None);
         assert_eq!(t("jina-code-embeddings-1.5b", SearchQuery), None);
         assert_eq!(jina_task("jina-embeddings-v4", None).ok(), Some(None));
+        assert_eq!(t("jina-embeddings-v2-base-en", SearchQuery), Some(None));
+        assert_eq!(t("jina-clip-v1", Clustering), Some(None));
     }
 
     #[test]

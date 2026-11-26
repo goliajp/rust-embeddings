@@ -51,6 +51,7 @@ impl Wire {
             // 120k tokens is the request cap of the larger models
             Wire::Voyage => (1000, Some(120_000), None),
             Wire::Cohere => (96, None, None),
+            // the next three input caps are observed, not documented
             Wire::Gemini => (100, None, None),
             Wire::Jina => (2048, None, None),
             Wire::Mistral => (512, None, None),
@@ -216,6 +217,30 @@ impl Endpoint {
         self.wire.default_model()
     }
 
+    /// OpenAI and Azure OpenAI document that an input cannot be an empty
+    /// string; other OpenAI-compatible servers often accept one.
+    pub(crate) fn refuses_empty_input(&self) -> bool {
+        if self.wire != Wire::OpenAi {
+            return false;
+        }
+        let host = self
+            .base_url
+            .split_once("://")
+            .map_or(self.base_url.as_str(), |(_, rest)| rest)
+            .split(['/', ':'])
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        host == "api.openai.com"
+            || [
+                ".openai.azure.com",
+                ".services.ai.azure.com",
+                ".cognitiveservices.azure.com",
+            ]
+            .iter()
+            .any(|suffix| host.ends_with(suffix))
+    }
+
     /// The current limits.
     pub fn current_limits(&self) -> Limits {
         self.limits
@@ -250,6 +275,20 @@ mod tests {
             Some(120_000)
         );
         assert_eq!(Endpoint::openai("k").limits.max_input_tokens, Some(8192));
+    }
+
+    #[test]
+    fn empty_input_refused_by_openai_and_azure_only() {
+        let compat = |url| Endpoint::openai_compatible("k", url).refuses_empty_input();
+        assert!(Endpoint::openai("k").refuses_empty_input());
+        assert!(compat("https://my-resource.openai.azure.com/openai/v1"));
+        assert!(compat(
+            "https://My-Resource.services.ai.azure.com/openai/v1/"
+        ));
+        assert!(!compat("http://localhost:11434/v1"));
+        assert!(!compat("https://openai.azure.com.example.org/v1"));
+        assert!(!Endpoint::mistral("k").refuses_empty_input());
+        assert!(!Endpoint::jina("k").refuses_empty_input());
     }
 
     #[test]

@@ -130,10 +130,25 @@ fn api_error(wire: Wire, resp: &HttpResponse) -> Error {
     Error::Api {
         status: resp.status,
         message: error_message(&resp.body),
-        retry_after: resp
-            .header("retry-after")
-            .and_then(|v| crate::retry::parse_retry_after(v, std::time::SystemTime::now())),
+        retry_after: retry_hint(wire, resp),
         provider: wire.name(),
+    }
+}
+
+fn retry_hint(wire: Wire, resp: &HttpResponse) -> Option<std::time::Duration> {
+    if let Some(d) = resp
+        .header("retry-after")
+        .and_then(|v| crate::retry::parse_retry_after(v, std::time::SystemTime::now()))
+    {
+        return Some(d);
+    }
+    match wire {
+        Wire::OpenAi => ["x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"]
+            .iter()
+            .filter_map(|h| resp.header(h).and_then(crate::retry::parse_duration))
+            .max(),
+        Wire::Gemini => gemini::retry_delay(&resp.body),
+        _ => None,
     }
 }
 
@@ -224,6 +239,52 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn retry_hints_without_retry_after() {
+        use std::time::Duration;
+        let hint = |wire, headers: Vec<(&str, &str)>, body: &str| {
+            let headers = headers
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            match parse(
+                wire,
+                1,
+                &HttpResponse::new(429, headers, body.as_bytes().to_vec()),
+            ) {
+                Err(Error::Api { retry_after, .. }) => retry_after,
+                other => panic!("{other:?}"),
+            }
+        };
+        let resets = vec![
+            ("x-ratelimit-reset-requests", "20ms"),
+            ("x-ratelimit-reset-tokens", "6m0s"),
+        ];
+        assert_eq!(
+            hint(Wire::OpenAi, resets.clone(), "{}"),
+            Some(Duration::from_secs(360))
+        );
+        let mut with_header = resets.clone();
+        with_header.push(("retry-after", "2"));
+        assert_eq!(
+            hint(Wire::OpenAi, with_header, "{}"),
+            Some(Duration::from_secs(2))
+        );
+        let one = vec![
+            ("x-ratelimit-reset-tokens", "garbage"),
+            ("x-ratelimit-reset-requests", "1s"),
+        ];
+        assert_eq!(hint(Wire::OpenAi, one, "{}"), Some(Duration::from_secs(1)));
+        // only openai sends these headers
+        assert_eq!(hint(Wire::Mistral, resets, "{}"), None);
+        let gemini = r#"{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"13s"}]}}"#;
+        assert_eq!(
+            hint(Wire::Gemini, vec![], gemini),
+            Some(Duration::from_secs(13))
+        );
+        assert_eq!(hint(Wire::OpenAi, vec![], gemini), None);
     }
 
     #[test]

@@ -192,6 +192,35 @@ impl<'a> Cursor<'a> {
         Ok(v)
     }
 
+    /// A count: a non-negative integer, also written with a zero fraction
+    /// (`2.0`), as providers that type counts as JSON numbers may send.
+    pub(crate) fn count(&mut self) -> R<u64> {
+        self.ws();
+        let start = self.pos;
+        let mut end = start;
+        while let Some(b'0'..=b'9') = self.s.get(end) {
+            end += 1;
+        }
+        if self.s.get(end) != Some(&b'.') {
+            return self.u64();
+        }
+        let mut frac = end + 1;
+        while let Some(b'0') = self.s.get(frac) {
+            frac += 1;
+        }
+        match self.s.get(frac) {
+            _ if frac == end + 1 => self.fail("expected digits after the decimal point"),
+            Some(b'1'..=b'9' | b'e' | b'E') => self.fail("expected an integer"),
+            _ => {
+                let mut whole = Cursor::new(&self.s[..end]);
+                whole.pos = start;
+                let v = whole.u64()?;
+                self.pos = frac;
+                Ok(v)
+            }
+        }
+    }
+
     /// One vector, as a JSON array of numbers or a base64 string of
     /// little-endian `f32`, appended to `out`. Returns its length.
     pub(crate) fn vector(&mut self, out: &mut Vec<f32>) -> R<usize> {
@@ -401,6 +430,26 @@ mod tests {
         assert_eq!(Cursor::new(b"0").u64().unwrap(), 0);
         for bad in ["-1", "01", "1.0", "1e3", "x", "18446744073709551616"] {
             assert!(Cursor::new(bad.as_bytes()).u64().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn counts() {
+        for (ok, want) in [("42", 42), (" 2.0", 2), ("0.000", 0), ("18.0", 18)] {
+            assert_eq!(Cursor::new(ok.as_bytes()).count().unwrap(), want, "{ok}");
+        }
+        let mut c = Cursor::new(b"[3.0,4]");
+        let mut got = vec![];
+        c.array(|c| {
+            got.push(c.count()?);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(got, [3, 4]);
+        for bad in [
+            "-1", "-1.0", "01.0", "1.", "1.5", "1.01", "1.0e3", "1e3", ".0", "x",
+        ] {
+            assert!(Cursor::new(bad.as_bytes()).count().is_err(), "{bad}");
         }
     }
 

@@ -101,7 +101,7 @@ pub(super) fn parse(body: &[u8], n: usize) -> R<Parsed> {
             c.object(|c, key| match key {
                 "promptTokenCount" => {
                     if !c.null()? {
-                        p.total_tokens = Some(c.u64()?);
+                        p.total_tokens = Some(c.count()?);
                     }
                     Ok(())
                 }
@@ -115,6 +115,41 @@ pub(super) fn parse(body: &[u8], n: usize) -> R<Parsed> {
         return c.fail("no embedding in the response");
     }
     Ok(p)
+}
+
+/// `retryDelay` of the `google.rpc.RetryInfo` in `error.details`.
+pub(super) fn retry_delay(body: &[u8]) -> Option<std::time::Duration> {
+    const RETRY_INFO: &str = "type.googleapis.com/google.rpc.RetryInfo";
+    let mut found = None;
+    let mut c = Cursor::new(body);
+    let detail = |c: &mut Cursor<'_>, found: &mut Option<String>| {
+        let (mut ty, mut delay) = (None, None);
+        c.object(|c, key| match key {
+            "@type" | "retryDelay" if c.peek() == Some(b'"') => {
+                let v = c.str()?.into_owned();
+                if key == "@type" {
+                    ty = Some(v);
+                } else {
+                    delay = Some(v);
+                }
+                Ok(())
+            }
+            _ => c.skip(),
+        })?;
+        if ty.as_deref() == Some(RETRY_INFO) && delay.is_some() {
+            *found = delay;
+        }
+        Ok(())
+    };
+    c.object(|c, key| match key {
+        "error" => c.object(|c, key| match key {
+            "details" => c.array(|c| detail(c, &mut found)),
+            _ => c.skip(),
+        }),
+        _ => c.skip(),
+    })
+    .ok()?;
+    crate::retry::parse_duration(&found?)
 }
 
 fn values(c: &mut Cursor<'_>, p: &mut Parsed, n: usize) -> R<()> {
@@ -149,6 +184,27 @@ mod tests {
         assert_eq!((p.data, p.total_tokens), (vec![0.1, 0.3], Some(7)));
         let p = parse(br#"{"embeddings":[]}"#, 0).unwrap();
         assert!(p.data.is_empty() && p.total_tokens.is_none());
+    }
+
+    #[test]
+    fn retry_delay_from_retry_info() {
+        let body = br#"{"error":{"code":429,"message":"quota","status":"RESOURCE_EXHAUSTED",
+            "details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaId":"x"}]},
+            {"retryDelay":"13s","@type":"type.googleapis.com/google.rpc.RetryInfo"}]}}"#;
+        assert_eq!(retry_delay(body), Some(std::time::Duration::from_secs(13)));
+        let half = br#"{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"1.5s"}]}}"#;
+        assert_eq!(
+            retry_delay(half),
+            Some(std::time::Duration::from_millis(1500))
+        );
+        for bad in [
+            &br#"{"error":{"details":[{"@type":"other","retryDelay":"13s"}]}}"#[..],
+            br#"{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"soon"}]}}"#,
+            br#"{"error":{"message":"no details"}}"#,
+            b"not json",
+        ] {
+            assert_eq!(retry_delay(bad), None);
+        }
     }
 
     #[test]

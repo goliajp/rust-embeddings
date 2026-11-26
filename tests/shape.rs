@@ -47,6 +47,7 @@ fn every_error_variant() {
                 tokens: _,
                 max: _,
             } => "too long",
+            Error::EmptyInput { index: _ } => "empty",
             Error::Unsupported {
                 model: _,
                 option: _,

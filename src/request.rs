@@ -180,6 +180,11 @@ fn check(ep: &Endpoint, p: &Plan, inputs: &Inputs<'_>) -> Result<()> {
     if count > max {
         return Err(Error::TooManyInputs { count, max });
     }
+    if ep.refuses_empty_input()
+        && let Some(index) = inputs.iter().position(str::is_empty)
+    {
+        return Err(Error::EmptyInput { index });
+    }
     #[cfg(feature = "token-count")]
     if p.truncate == Truncate::Error
         && let Some(max) = ep.limits.max_input_tokens
@@ -303,7 +308,7 @@ async fn cloud(
             Error::Api { retry_after, .. } => *retry_after,
             _ => None,
         };
-        let delay = hint.unwrap_or_else(|| backoff.delay(attempt));
+        let delay = hint.map_or_else(|| backoff.delay(attempt), |h| backoff.cap(h));
         #[cfg(feature = "tracing")]
         tracing::warn!(attempt, delay_ms = delay.as_millis() as u64, error = %err, "retrying");
         client.sleep(delay).await;
@@ -411,6 +416,19 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn retry_hints_are_capped_by_the_backoff_max() {
+        let t = fake_full(vec![
+            status(429, &[("retry-after", "120")]),
+            status(429, &[("x-ratelimit-reset-tokens", "6m0s")]),
+            ok(ONE),
+        ]);
+        let c = client(&t).with_retry(Backoff::new().jitter(false).max(Duration::from_secs(5)));
+        block_on(c.embed(["a"]).into_future()).unwrap();
+        let slept = t.slept.lock().unwrap();
+        assert_eq!(slept[1..], [Duration::from_secs(5), Duration::from_secs(5)]);
+    }
+
+    #[test]
     fn no_backoff_means_no_retry_and_client_errors_are_not_retried() {
         let t = fake_full(vec![status(503, &[])]);
         assert!(block_on(client(&t).embed(["a"]).into_future()).is_err());
@@ -480,6 +498,25 @@ pub(crate) mod tests {
         let e = block_on(c.embed(&texts).into_future()).unwrap_err();
         assert!(matches!(e, Error::TooManyInputs { count: 97, max: 96 }));
         assert!(t.sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_openai_inputs_are_refused_before_sending() {
+        let t = fake_full(vec![]);
+        let c =
+            Client::new(Endpoint::openai("k"), t.clone()).with_timeout(Duration::from_secs(1000));
+        let e = block_on(c.embed(["a", ""]).into_future()).unwrap_err();
+        assert!(matches!(e, Error::EmptyInput { index: 1 }));
+        assert!(t.sent.lock().unwrap().is_empty());
+        // the first chunk goes out; the one holding the empty text does not
+        let two = r#"{"data":[{"embedding":[1]},{"embedding":[2]}]}"#;
+        let t2 = fake_full(vec![ok(two)]);
+        let c = c.with_transport(t2.clone());
+        let e = block_on(c.embed_batch(["a", "b", ""]).chunk_size(2).into_future());
+        assert!(matches!(e, Err(Error::EmptyInput { index: 2 })));
+        assert_eq!(t2.sent.lock().unwrap().len(), 1);
+        let local = Client::new(Endpoint::openai_compatible("k", "http://x/v1"), t.clone());
+        assert!(local.prepare([""]).is_ok());
     }
 
     #[cfg(feature = "token-count")]

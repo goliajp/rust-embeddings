@@ -64,6 +64,11 @@ impl Backoff {
         self.retries
     }
 
+    /// A server's retry hint, no longer than [`max`](Self::max).
+    pub(crate) fn cap(&self, hint: Duration) -> Duration {
+        hint.min(self.max)
+    }
+
     /// Delay before retry number `attempt` (0-based):
     /// `min(base * 2^attempt, max)`, times the jitter factor.
     pub fn delay(&self, attempt: u32) -> Duration {
@@ -105,6 +110,50 @@ pub(crate) fn parse_retry_after(v: &str, now: SystemTime) -> Option<Duration> {
     }
     let at = UNIX_EPOCH + Duration::from_secs(http_date(v)?);
     Some(at.duration_since(now).unwrap_or(Duration::ZERO))
+}
+
+/// A Go-style duration: one or more decimal numbers, each with a unit of
+/// `h`, `m`, `s`, `ms`, `us`/`µs` or `ns` (`"6m0s"`, `"1.5s"`, `"20ms"`), or a
+/// bare `"0"`. Google's JSON durations (`"13s"`, `"0.5s"`) are a subset.
+/// Signs and anything else are `None`.
+pub(crate) fn parse_duration(v: &str) -> Option<Duration> {
+    let v = v.trim();
+    if v == "0" {
+        return Some(Duration::ZERO);
+    }
+    let mut rest = v.as_bytes();
+    if rest.is_empty() {
+        return None;
+    }
+    let mut secs = 0f64;
+    while !rest.is_empty() {
+        let num_len = rest
+            .iter()
+            .position(|b| !(b.is_ascii_digit() || *b == b'.'))
+            .unwrap_or(rest.len());
+        let num = std::str::from_utf8(&rest[..num_len]).ok()?;
+        if num.is_empty() || num == "." || num.matches('.').count() > 1 {
+            return None;
+        }
+        let n: f64 = num.parse().ok()?;
+        rest = &rest[num_len..];
+        let unit_len = rest
+            .iter()
+            .position(|b| b.is_ascii_digit() || *b == b'.')
+            .unwrap_or(rest.len());
+        let scale = match std::str::from_utf8(&rest[..unit_len]).ok()? {
+            "h" => 3600.0,
+            "m" => 60.0,
+            "s" => 1.0,
+            "ms" => 1e-3,
+            "us" | "\u{b5}s" | "\u{3bc}s" => 1e-6,
+            "ns" => 1e-9,
+            _ => return None,
+        };
+        rest = &rest[unit_len..];
+        secs += n * scale;
+    }
+    Duration::try_from_secs_f64(secs).ok()
 }
 
 const MONTHS: [&str; 12] = [
@@ -213,6 +262,47 @@ mod tests {
             "Sun, 06 Nov 1994 25:00:00 GMT",
         ] {
             assert_eq!(parse_retry_after(bad, now), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn go_and_google_durations() {
+        let ms = |n| Some(Duration::from_millis(n));
+        for (v, want) in [
+            ("1s", ms(1000)),
+            ("6m0s", ms(360_000)),
+            ("20ms", ms(20)),
+            ("1.5s", ms(1500)),
+            ("13s", ms(13_000)),
+            ("0.5s", ms(500)),
+            ("1h2m3s", ms(3_723_000)),
+            ("1m30.5s", ms(90_500)),
+            (" 7s ", ms(7000)),
+            ("0", ms(0)),
+            ("250us", Some(Duration::from_micros(250))),
+            ("250\u{b5}s", Some(Duration::from_micros(250))),
+            ("90ns", Some(Duration::from_nanos(90))),
+        ] {
+            assert_eq!(parse_duration(v), want, "{v}");
+        }
+        for bad in [
+            "",
+            "s",
+            "1",
+            "10",
+            "-1s",
+            "+1s",
+            "1.2.3s",
+            ".s",
+            "1x",
+            "1 s",
+            "1s2",
+            "soon",
+            "1e3s",
+            "NaNs",
+            "99999999999999999999999h",
+        ] {
+            assert_eq!(parse_duration(bad), None, "{bad}");
         }
     }
 

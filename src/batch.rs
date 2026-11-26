@@ -101,6 +101,9 @@ impl<'c, 't> BatchBuilder<'c, 't> {
                             tokens,
                             max,
                         },
+                        Error::EmptyInput { index } => Error::EmptyInput {
+                            index: start + index,
+                        },
                         e => e,
                     })
                 }) as BoxFuture<'_, _>

@@ -20,7 +20,11 @@ pub enum Error {
         status: u16,
         /// The provider's error message, or the start of the body when it has none.
         message: String,
-        /// The `Retry-After` header, in seconds or as an HTTP date.
+        /// When the provider says to retry: the `Retry-After` header (seconds
+        /// or an HTTP date); without it, the later of OpenAI's
+        /// `x-ratelimit-reset-requests` and `x-ratelimit-reset-tokens`, or
+        /// the `retryDelay` of a Gemini error. Retries wait this long, up to
+        /// the backoff's `max`.
         retry_after: Option<Duration>,
         /// Which provider answered (`"openai"`, `"cohere"`, ...).
         provider: &'static str,
@@ -48,6 +52,12 @@ pub enum Error {
         tokens: u32,
         /// The model's limit.
         max: u32,
+    },
+
+    /// An empty string, for an endpoint whose API refuses one (OpenAI, Azure OpenAI).
+    EmptyInput {
+        /// Position of the input.
+        index: usize,
     },
 
     /// A request option the model or provider cannot honour.
@@ -122,6 +132,12 @@ impl fmt::Display for Error {
                 f,
                 "input {index} is {tokens} tokens; the model reads at most {max}"
             ),
+            Error::EmptyInput { index } => {
+                write!(
+                    f,
+                    "input {index} is empty; the endpoint refuses empty strings"
+                )
+            }
             Error::Unsupported { model, option } => {
                 write!(f, "{model} does not support {option}")
             }
