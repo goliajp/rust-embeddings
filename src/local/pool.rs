@@ -33,17 +33,11 @@ unsafe impl Send for Pool {}
 // how long an idle worker spins before parking
 const SPIN: Duration = Duration::from_micros(50);
 
-/// Threads for one pass: `EMBEDRS_THREADS` if set, else the performance
-/// cores on macOS, else what the OS gives this process.
+/// Threads for one pass by default: the performance cores on macOS, else
+/// what the OS gives this process.
 pub(crate) fn threads() -> usize {
     static N: OnceLock<usize> = OnceLock::new();
     *N.get_or_init(|| {
-        if let Some(n) = std::env::var("EMBEDRS_THREADS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-        {
-            return n.max(1);
-        }
         #[cfg(target_os = "macos")]
         if let Some(n) = performance_cores() {
             return n;

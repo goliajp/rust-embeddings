@@ -86,6 +86,7 @@ impl Engine {
         texts: &[String],
         prefix: Option<&str>,
         refuse_long: bool,
+        threads: Option<usize>,
     ) -> Result<(Vec<f32>, u64)> {
         let ids = self.tokenize(texts, prefix, refuse_long)?;
         let total: usize = ids.iter().map(Vec::len).sum();
@@ -104,7 +105,7 @@ impl Engine {
         }
         chunks.push(start..order.len());
         let threads = if total >= POOL_MIN_TOKENS {
-            pool::threads()
+            threads.unwrap_or_else(pool::threads)
         } else {
             1
         };

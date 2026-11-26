@@ -16,7 +16,6 @@ mod neon;
 mod portable;
 
 use super::pool::{self, Par, Shared};
-use super::safetensors::F32s;
 
 /// The kernel family a packed matrix was laid out for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,9 +58,21 @@ impl Isa {
             Self::Portable => portable::MR,
         }
     }
+
+    fn kc(self) -> usize {
+        match self {
+            #[cfg(target_arch = "aarch64")]
+            Self::Neon => neon::KC,
+            #[cfg(target_arch = "x86_64")]
+            Self::Avx2 => avx2::KC,
+            Self::Portable => portable::KC,
+        }
+    }
 }
 
-/// B (k, n) in panels for one kernel family; reusable as a buffer.
+/// B (k, n) in panels for one kernel family; reusable as a buffer. The k
+/// rows are cut into blocks of KC, and within a block the panels follow one
+/// another, each (block rows, NR); a product walks the data front to back.
 pub(crate) struct Packed {
     isa: Isa,
     data: Vec<f32>,
@@ -79,32 +90,49 @@ impl Packed {
         }
     }
 
-    fn fill(&mut self, k: usize, n: usize, at: impl Fn(usize, usize) -> f32) {
-        let nr = self.isa.nr();
+    /// Zeroed storage for (k, n); returns (NR, KC, panels).
+    fn shape(&mut self, k: usize, n: usize) -> (usize, usize, usize) {
+        let (nr, kc) = (self.isa.nr(), self.isa.kc());
         let panels = n.div_ceil(nr);
         self.data.clear();
-        self.data.reserve(panels * k * nr);
-        for p in 0..panels {
-            for kk in 0..k {
-                for j in p * nr..p * nr + nr {
-                    self.data.push(if j < n { at(kk, j) } else { 0.0 });
-                }
-            }
-        }
+        self.data.resize(panels * k * nr, 0.0);
         self.k = k;
         self.n = n;
+        (nr, kc, panels)
     }
 
     /// B[kk][j] = src[kk * ld + j].
     pub(crate) fn pack(&mut self, src: &[f32], ld: usize, k: usize, n: usize) {
         assert!(k > 0 && n > 0 && src.len() >= (k - 1) * ld + n);
-        self.fill(k, n, |kk, j| src[kk * ld + j]);
+        let (nr, kc, panels) = self.shape(k, n);
+        for k0 in (0..k).step_by(kc) {
+            let len = kc.min(k - k0);
+            let block = &mut self.data[k0 * panels * nr..(k0 + len) * panels * nr];
+            for kk in 0..len {
+                let row = &src[(k0 + kk) * ld..(k0 + kk) * ld + n];
+                for (p, part) in row.chunks(nr).enumerate() {
+                    let o = (p * len + kk) * nr;
+                    block[o..o + part.len()].copy_from_slice(part);
+                }
+            }
+        }
     }
 
     /// B[kk][j] = src[j * ld + kk]: B given as its transpose, n rows of k.
     pub(crate) fn pack_t(&mut self, src: &[f32], ld: usize, n: usize, k: usize) {
         assert!(k > 0 && n > 0 && src.len() >= (n - 1) * ld + k);
-        self.fill(k, n, |kk, j| src[j * ld + kk]);
+        let (nr, kc, panels) = self.shape(k, n);
+        for k0 in (0..k).step_by(kc) {
+            let len = kc.min(k - k0);
+            let block = &mut self.data[k0 * panels * nr..(k0 + len) * panels * nr];
+            for j in 0..n {
+                let col = &src[j * ld + k0..j * ld + k0 + len];
+                let base = (j / nr) * len * nr + j % nr;
+                for (kk, &v) in col.iter().enumerate() {
+                    block[base + kk * nr] = v;
+                }
+            }
+        }
     }
 }
 
@@ -198,7 +226,7 @@ unsafe fn tile(
 /// row block costs only its rows; a partial column panel goes through a
 /// scratch tile.
 macro_rules! tile_loop {
-    ($kernel:ident, $mr:expr, $nr:expr, $kc:expr $(, $feature:literal)?) => {
+    ($kernel:ident, $mr:expr, $nr:expr, $kc:expr, $mc:expr $(, $feature:literal)?) => {
         #[allow(clippy::too_many_arguments)]
         $(#[target_feature(enable = $feature)])?
         pub(super) unsafe fn tile(data: &[f32], k: usize, n: usize, a: *const f32, lda: usize, c: *mut f32, ldc: usize, r0: usize, r1: usize, p0: usize, p1: usize) {
@@ -217,15 +245,21 @@ macro_rules! tile_loop {
                     _ => unreachable!("row block larger than the kernel"),
                 }
             };
+            let np = n.div_ceil($nr);
             let mut kc0 = 0;
             while kc0 < k {
                 let kc = ($kc).min(k - kc0);
+                // rows in blocks of MC, so the A rows of a block stay in L2
+                // while every panel of this k block passes over them
+                let mut m0 = r0;
+                while m0 < r1 {
+                let m1 = (m0 + $mc).min(r1);
                 for p in p0..p1 {
                     let cols = ($nr).min(n - p * $nr);
-                    let bp = unsafe { data.as_ptr().add(p * k * $nr + kc0 * $nr) };
-                    let mut r = r0;
-                    while r < r1 {
-                        let rows = ($mr).min(r1 - r);
+                    let bp = unsafe { data.as_ptr().add(kc0 * np * $nr + p * kc * $nr) };
+                    let mut r = m0;
+                    while r < m1 {
+                        let rows = ($mr).min(m1 - r);
                         let mut ap = [std::ptr::null(); 8];
                         for (i, q) in ap.iter_mut().take(rows).enumerate() {
                             *q = unsafe { a.add((r + i) * lda + kc0) };
@@ -250,6 +284,8 @@ macro_rules! tile_loop {
                         r += $mr;
                     }
                 }
+                m0 = m1;
+                }
                 kc0 += $kc;
             }
         }
@@ -257,25 +293,36 @@ macro_rules! tile_loop {
 }
 pub(crate) use tile_loop;
 
-/// A linear layer's weight, (n outputs, k inputs) as stored by PyTorch.
+/// A linear layer's weight, given as (n outputs, k inputs) the way PyTorch
+/// stores it, kept as Wᵀ (k, n) for Accelerate on macOS and in panels for the
+/// own kernels elsewhere. Accelerate reads a transposed operand several times
+/// slower for the short inputs of one text, so the copy is worth its memory.
 pub(crate) struct Weight {
     n: usize,
     k: usize,
     #[cfg(target_os = "macos")]
-    w: F32s,
+    w: Vec<f32>,
     #[cfg(not(target_os = "macos"))]
     w: Packed,
 }
 
 impl Weight {
-    pub(crate) fn new(w: F32s, n: usize, k: usize) -> Self {
+    pub(crate) fn new(w: &[f32], n: usize, k: usize) -> Self {
         assert_eq!(w.len(), n * k);
         #[cfg(target_os = "macos")]
-        return Self { n, k, w };
+        {
+            let mut t = vec![0f32; n * k];
+            for (o, row) in w.chunks_exact(k).enumerate() {
+                for (i, &v) in row.iter().enumerate() {
+                    t[i * n + o] = v;
+                }
+            }
+            Self { n, k, w: t }
+        }
         #[cfg(not(target_os = "macos"))]
         {
             let mut p = Packed::new(Isa::detect());
-            p.pack_t(&w, k, n, k);
+            p.pack_t(w, k, n, k);
             Self { n, k, w: p }
         }
     }
@@ -287,7 +334,7 @@ pub(crate) fn linear(a: &[f32], m: usize, w: &Weight, c: &mut [f32], par: Par) {
     #[cfg(target_os = "macos")]
     {
         let _ = par;
-        accelerate::sgemm(true, m, w.n, w.k, a, w.k, &w.w, w.k, 1.0, c, w.n);
+        accelerate::sgemm(false, m, w.n, w.k, a, w.k, &w.w, w.n, 1.0, c, w.n);
     }
     #[cfg(not(target_os = "macos"))]
     gemm(m, a, w.k, &w.w, c, w.n, par);

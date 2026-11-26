@@ -83,7 +83,7 @@ fn matches_the_recorded_vectors() {
         let engine = Engine::load(m, &path).unwrap();
         for (qi, query) in [false, true].into_iter().enumerate() {
             let prefix = m.query_prefix.filter(|_| query);
-            let (got, tokens) = engine.encode(&rec.texts, prefix, false).unwrap();
+            let (got, tokens) = engine.encode(&rec.texts, prefix, false, None).unwrap();
             let (want_tokens, want) = &rec.runs[mi * 2 + qi];
             assert_eq!(tokens, *want_tokens, "{} tokens", m.name);
             let (mut worst, mut cos) = (0f32, 1f64);
@@ -121,7 +121,7 @@ fn as_close_to_f64_as_the_recorded_vectors() {
         let Some(path) = cached(m) else { continue };
         let engine = Engine::load(m, &path).unwrap();
         let st = Safetensors::open(&path).unwrap();
-        let (got, _) = engine.encode(&rec.texts, None, false).unwrap();
+        let (got, _) = engine.encode(&rec.texts, None, false, None).unwrap();
         let (mut ours, mut theirs) = (0f64, 0f64);
         let mut checked = 0;
         for (i, text) in rec.texts.iter().enumerate() {
@@ -164,9 +164,19 @@ fn batches_and_limits() {
         .map(|i| rec.texts[i % rec.texts.len()].clone())
         .collect();
     texts.push(String::new());
-    let (all, _) = engine.encode(&texts, None, false).unwrap();
+    let (all, _) = engine.encode(&texts, None, false, None).unwrap();
+    // one thread gives the same vectors as the default pool
+    let (one, _) = engine.encode(&texts, None, false, Some(1)).unwrap();
+    let d = one
+        .iter()
+        .zip(&all)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0f32, f32::max);
+    assert!(d <= 1e-5, "one thread: {d:e}");
     for (i, t) in texts.iter().enumerate().step_by(7) {
-        let (one, _) = engine.encode(std::slice::from_ref(t), None, false).unwrap();
+        let (one, _) = engine
+            .encode(std::slice::from_ref(t), None, false, None)
+            .unwrap();
         let d = one
             .iter()
             .zip(&all[i * 384..])
@@ -179,13 +189,13 @@ fn batches_and_limits() {
     let at = word(m.max_tokens - 2);
     let over = word(m.max_tokens - 1);
     let (a, ta) = engine
-        .encode(std::slice::from_ref(&at), None, false)
+        .encode(std::slice::from_ref(&at), None, false, None)
         .unwrap();
     let (b, tb) = engine
-        .encode(std::slice::from_ref(&over), None, false)
+        .encode(std::slice::from_ref(&over), None, false, None)
         .unwrap();
     assert_eq!((ta, tb), (m.max_tokens as u64, m.max_tokens as u64));
     assert_eq!(a, b);
-    assert!(engine.encode(&[at], None, true).is_ok());
-    assert!(engine.encode(&[over], None, true).is_err());
+    assert!(engine.encode(&[at], None, true, None).is_ok());
+    assert!(engine.encode(&[over], None, true, None).is_err());
 }

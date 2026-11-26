@@ -69,6 +69,7 @@ struct Job {
     texts: Vec<String>,
     prefix: Option<&'static str>,
     refuse_long: bool,
+    threads: Option<usize>,
     reply: oneshot::Sender<Reply>,
 }
 
@@ -82,6 +83,7 @@ struct Worker {
 #[derive(Clone)]
 pub struct LocalModel {
     worker: Arc<Worker>,
+    threads: Option<usize>,
 }
 
 impl std::fmt::Debug for LocalModel {
@@ -118,7 +120,10 @@ impl LocalModel {
             .ok_or_else(|| named(fail("the loading thread panicked".into()), info.name))??;
         let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(w) = loaded.get(info.name).and_then(Weak::upgrade) {
-            return Ok(Self { worker: w });
+            return Ok(Self {
+                worker: w,
+                threads: None,
+            });
         }
         loaded.insert(info.name, Arc::downgrade(&model.worker));
         Ok(model)
@@ -134,7 +139,10 @@ impl LocalModel {
     fn loaded(info: &'static ModelInfo) -> Option<Self> {
         let loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
         let worker = loaded.get(info.name)?.upgrade()?;
-        Some(Self { worker })
+        Some(Self {
+            worker,
+            threads: None,
+        })
     }
 
     fn start(info: &'static ModelInfo, weights: &Path) -> Result<Self> {
@@ -144,8 +152,12 @@ impl LocalModel {
             .name(format!("embedrs-{}", info.name))
             .spawn(move || {
                 for job in rx {
-                    job.reply
-                        .send(engine.encode(&job.texts, job.prefix, job.refuse_long));
+                    job.reply.send(engine.encode(
+                        &job.texts,
+                        job.prefix,
+                        job.refuse_long,
+                        job.threads,
+                    ));
                 }
             })
             .map_err(|e| {
@@ -156,12 +168,26 @@ impl LocalModel {
             })?;
         Ok(Self {
             worker: Arc::new(Worker { info, jobs }),
+            threads: None,
         })
     }
 
     /// The model this is.
     pub fn info(&self) -> &'static ModelInfo {
         self.worker.info
+    }
+
+    /// Use at most `threads` threads for each call made through this handle,
+    /// the model's own thread included; 1 keeps every call on that thread.
+    /// Without it, a call with more than a few dozen tokens uses the
+    /// performance cores on macOS and every core the process may use
+    /// elsewhere. On macOS the matrix products run in Accelerate, whose own
+    /// threads follow `VECLIB_MAXIMUM_THREADS`. Clones made afterwards keep
+    /// the setting; the model itself is shared and stays loaded once.
+    #[must_use]
+    pub fn with_threads(mut self, threads: usize) -> Self {
+        self.threads = Some(threads.max(1));
+        self
     }
 
     async fn run(
@@ -181,6 +207,7 @@ impl LocalModel {
                 .query_prefix
                 .filter(|_| input_type == Some(InputType::SearchQuery)),
             refuse_long: truncate == Truncate::Error,
+            threads: self.threads,
             reply,
         };
         let stopped = || named(fail("the worker thread stopped".into()), info.name);
