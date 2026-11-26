@@ -159,13 +159,12 @@ use std::sync::Arc;
 use embedrs::{Client, Endpoint, transport::ReqwestTransport};
 
 fn azure() -> Client {
-    let endpoint = Endpoint::openai_compatible(
-        "",
-        "https://my-resource.openai.azure.com/openai/deployments/emb",
-    )
-    .bearer(false)
-    .header("api-key", "azure-key");
-    Client::new(endpoint, Arc::new(ReqwestTransport::new()))
+    // the v1 api: no api-version parameter, the deployment name goes in `model`
+    let endpoint =
+        Endpoint::openai_compatible("", "https://my-resource.openai.azure.com/openai/v1")
+            .bearer(false)
+            .header("api-key", "azure-key");
+    Client::new(endpoint, Arc::new(ReqwestTransport::new())).with_model("my-embedding-deployment")
 }
 ```
 
