@@ -133,13 +133,17 @@ any component (38 texts, all four models; cosine 1 − 2e-12 or closer).
 Measured on an Apple M4 Pro (conditions and peers in the README), 0.6.2 first:
 
 - Local `all-MiniLM-L6-v2` on an M4 Pro, default threads: one text of 8 words
-  3.13 → 1.18 ms, 40 words 5.92 → 2.28 ms, 180 words 15.8 → 5.53 ms; batches of
-  256 texts 2.2 to 3.7 times as many texts per second (8 words 1,864 → 6,937 /s,
-  mixed lengths 246 → 633 /s). With one thread: 1.4 to 3.2 times as fast. On
-  an Intel i7-10700K (Linux), 3.1 to 8.1 times as fast with default threads and
-  1.5 to 2.3 times with one thread.
+  3.12 → 0.77 ms, 40 words 5.91 → 2.04 ms, 180 words 16.0 → 5.02 ms; batches of
+  256 texts 2.3 to 4.1 times as many texts per second (8 words 1,873 → 7,630 /s,
+  mixed lengths 246 → 665 /s). With one thread: 2.3 to 3.4 times as fast. On
+  an Intel i7-10700K (Linux), 3.2 to 8.2 times as fast with default threads and
+  1.8 to 2.7 times with one thread.
+- `bge-small-en-v1.5` computes only the [CLS] rows in its last layer: one
+  text of 180 words takes 15.7 ms on one M4 Pro thread, 19.5 ms when every
+  row runs through it.
 - Peak memory of a process that loads one local model and embeds 256 texts:
-  178 to 234 MB, against 680 to 1,883 MB in 0.6.2.
+  201 to 286 MB on macOS (0.6.2: 687 to 1,878 MB), 184 to 265 MB on Linux
+  (0.6.2: 572 to 1,147 MB).
 - `embed()` over loopback, 256 vectors of 1536 dimensions: decimal 6.64 →
   3.87 ms, base64 1.43 → 0.80 ms.
 - Request bodies: 256 texts in 0.015 ms (serde_json 0.024 ms).
